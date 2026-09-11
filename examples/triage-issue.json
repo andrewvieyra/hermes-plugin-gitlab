@@ -1,0 +1,29 @@
+[
+  {
+    "tool": "gitlab_issues",
+    "args": {"project": "platform/api", "action": "get", "iid": 1}
+  },
+  {
+    "tool": "gitlab_issue_write",
+    "args": {
+      "project": "platform/api",
+      "action": "update",
+      "iid": 1,
+      "add_labels": ["priority::high"],
+      "remove_labels": ["needs-triage"],
+      "assignees": ["dana"],
+      "milestone": "v1.0",
+      "due_date": "2026-09-30"
+    }
+  },
+  {
+    "tool": "gitlab_issue_write",
+    "args": {
+      "project": "platform/api",
+      "action": "comment",
+      "iid": 1,
+      "body": "Triaged: reproducible on staging after a token refresh. Assigned to @dana for v1.0.",
+      "internal": true
+    }
+  }
+]

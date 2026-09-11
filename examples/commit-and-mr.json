@@ -1,0 +1,35 @@
+[
+  {
+    "tool": "gitlab_repo",
+    "args": {"project": "platform/api", "action": "branches", "name": "main"}
+  },
+  {
+    "tool": "gitlab_commit",
+    "args": {
+      "project": "platform/api",
+      "branch": "fix/hash-passwords",
+      "start_branch": "main",
+      "expected_head_sha": "<commit.id from the branches call>",
+      "commit_message": "Hash passwords before comparing\n\nUse bcrypt instead of a plain-text comparison in the login handler.",
+      "actions": [
+        {"action": "update", "file_path": "src/login.py", "content": "import bcrypt\n\n\ndef login(user, password):\n    return bcrypt.checkpw(password.encode(), user.password_hash)\n"},
+        {"action": "create", "file_path": "tests/test_login.py", "content": "def test_login_rejects_wrong_password():\n    ...\n"}
+      ],
+      "dry_run": true
+    }
+  },
+  {
+    "tool": "gitlab_mr_write",
+    "args": {
+      "project": "platform/api",
+      "action": "create",
+      "source_branch": "fix/hash-passwords",
+      "target_branch": "main",
+      "title": "Hash passwords before comparing",
+      "description": "Closes #1.\n\nReplaces the plain-text comparison with bcrypt.",
+      "reviewers": ["andrew"],
+      "remove_source_branch": true,
+      "labels": ["backend", "security"]
+    }
+  }
+]

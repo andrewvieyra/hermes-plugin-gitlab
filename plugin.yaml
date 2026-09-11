@@ -1,0 +1,104 @@
+name: gitlab
+version: 0.1.0
+manifest_version: 2
+api_version: 1
+description: "GitLab (self-managed or GitLab.com) for Hermes: read repositories, issues, merge requests and CI with typed tools; every write goes through one gate with preview, project allow-list, head-sha preconditions, operator staging and an audit trail."
+author: Andrew Vieyra
+license: MIT
+homepage: https://github.com/andrewvieyra/hermes-plugin-gitlab
+tags: [gitlab, git, code-review, ci, devops, merge-requests]
+kind: standalone
+requires_env:
+  - name: GITLAB_URL
+    description: "Base URL of the GitLab instance, e.g. https://gitlab.example.com"
+    secret: false
+  - name: GITLAB_TOKEN
+    description: "Personal, project or group access token (read_api for read-only, api for writes). Prefix with 'Bearer ' for an OAuth token."
+    url: "https://docs.gitlab.com/user/profile/personal_access_tokens/"
+    secret: true
+optional_env:
+  - GITLAB_VERIFY_SSL
+  - GITLAB_TIMEOUT
+provides_tools:
+  - gitlab_search
+  - gitlab_repo
+  - gitlab_issues
+  - gitlab_merge_requests
+  - gitlab_pipelines
+  - gitlab_api
+  - gitlab_issue_write
+  - gitlab_mr_write
+  - gitlab_pipeline_write
+  - gitlab_commit
+provides_hooks: []
+python_dependencies:
+  - "requests>=2.28,<3"
+config_schema:
+  write_mode:
+    type: str
+    default: full
+    description: "full: the model may write after asking. operator_only: model writes are staged and only /gitlab run or `hermes gitlab run` sends them. read_only: no writes; the write tools are hidden."
+  allow_merge:
+    type: bool
+    default: false
+    description: "Allow gitlab_mr_write action=merge. Off by default: merging is irreversible."
+  allow_raw_writes:
+    type: bool
+    default: false
+    description: "Allow gitlab_api with POST, PUT or PATCH (never on credential, membership or settings endpoints)."
+  allow_raw_delete:
+    type: bool
+    default: false
+    description: "Also allow gitlab_api with DELETE (requires allow_raw_writes)."
+  write_projects:
+    type: list
+    default: []
+    description: "Glob allow-list of projects the agent may write to, e.g. [\"platform/*\", \"andrew/sandbox\"]. Empty allows any project the token can write to."
+  max_results:
+    type: int
+    default: 100
+    description: "Maximum items any list call returns."
+  max_diff_bytes:
+    type: int
+    default: 120000
+    description: "Cap on rendered diff text per call; files beyond it are listed but not shown."
+  max_file_bytes:
+    type: int
+    default: 200000
+    description: "Cap on decoded file content per call."
+  max_log_lines:
+    type: int
+    default: 300
+    description: "Cap on job log lines per call."
+  max_staged_age_hours:
+    type: int
+    default: 24
+    description: "Staged writes older than this are refused by run; ask again instead."
+  staged_retention_days:
+    type: int
+    default: 90
+    description: "Delete finished staged writes older than this many days. 0 keeps them forever."
+  redact_secrets:
+    type: bool
+    default: true
+    description: "Mask token-shaped strings, private keys and password assignments in job logs, and token formats in file contents, diffs and code search results."
+  audit_log:
+    type: bool
+    default: true
+    description: "Append one JSON line per write event (and read event when audit_reads is on) to the audit log."
+  audit_log_path:
+    type: str
+    default: ""
+    description: "Audit log file. Empty means <HERMES_HOME>/plugin-data/gitlab/audit.jsonl."
+  audit_include_request:
+    type: bool
+    default: true
+    description: "Record the user's triggering message (truncated to 500 characters) in the actor record."
+  audit_reads:
+    type: bool
+    default: false
+    description: "Also record every read tool call (tool, action, project, outcome)."
+  audit_sinks:
+    type: list
+    default: []
+    description: "Forward audit events to syslog (udp/tcp/tls, json or CEF) and/or an HTTP collector (json or Splunk HEC). See docs/sinks.md."
