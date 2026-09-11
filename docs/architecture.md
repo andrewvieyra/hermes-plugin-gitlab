@@ -136,15 +136,17 @@ opportunistic sweep and on `/gitlab prune`.
 ## Deny-lists for `gitlab_api`
 
 Sensitive, every method (their responses carry secrets or their state is credentials):
-`variables`, `deploy_tokens`, `access_tokens`, `deploy_keys`, `hooks`, `secure_files`, `integrations`,
-`services`, `export`/`import`, `personal_access_tokens` (except `/self`), `user/keys` and similar,
-`application/*`, `admin/*`, `broadcast_messages`, `license`, `sidekiq`, `system_hooks`, `keys`,
-`geo`, `audit_events`.
+`variables`, `deploy_tokens`, `access_tokens`, `deploy_keys`, `hooks`, `triggers`, `tokens`,
+`secure_files`, `integrations`, `services`, `export`/`import`, `personal_access_tokens` (except
+`/self`), `user/keys` and similar, `application/*`, `admin/*`, `broadcast_messages`, `license`,
+`sidekiq`, `system_hooks`, `keys`, `geo`, `audit_events`.
 
 Administrative, non-GET (a human with the right role should do these in the UI): `users`, a project
-or group itself (`projects/:id`, `groups/:id`), `members`, `share`, `protected_*`, `approval_rules`,
-project approval settings, `runners`, `transfer`/`archive`/`unarchive`/`restore`, mirrors, push
-rules, housekeeping, `namespaces`, `topics`, `applications`, `oauth`.
+or group itself (`projects/:id`, `groups/:id`) and creating one (`POST projects`, `POST groups`),
+`members`, `share`, `protected_*`, `approval_rules`, project approval settings, `runners`,
+`transfer`/`archive`/`unarchive`/`restore`, mirrors, push rules, housekeeping, `merged_branches`
+(deletes every merged branch), LDAP and SAML group links, `namespaces`, `topics`, `applications`,
+`oauth`.
 
 The lists are regular expressions in `executor.py`; a refusal names the surface. They are matched
 against every spelling GitLab could resolve the path to: as given, percent-decoded (repeatedly, for

@@ -33,6 +33,7 @@ the instance refuses the scope. Code snippets are redacted for token formats.
 
 | `action` | Parameters | Returns |
 |---|---|---|
+| `project` | – | `metadata`: id, path, default branch, visibility, merge settings, namespace |
 | `tree` | `path`, `ref`, `recursive` | entries (`path`, `type`, `mode`) |
 | `file` | `path` (required), `ref` (default `HEAD`), `start_line`, `end_line` | decoded `content` (or `binary: true` with size), `total_lines`, `lines`, `commit_id`, `last_commit_id`, `truncated`, `redacted`. The range is taken from the whole file and then capped, so slices past `max_file_bytes` work; `start_line` past the end or `end_line` before `start_line` is an error |
 | `commits` | `ref`, `path`, `since`, `until`, `author`, `all`, `first_parent` | commits (no `count`: GitLab omits `x-total` here) |
@@ -55,7 +56,7 @@ changed files report `files_truncated`.
 | `action` | Parameters |
 |---|---|
 | `list` (default) | `project` (omit for all projects the token sees), `state`, `labels` (all must match), `milestone`, `assignee` (username, or `None` / `Any`), `author`, `search`, `iids`, `issue_type`, `confidential`, `scope`, `order_by`, `sort`, `updated_after`, `updated_before`, `created_after`, `created_before` |
-| `get` | `project`, `iid` (required), `include_discussions` (default true), `include_system` (default false), `limit` for threads |
+| `get` | `project`, `iid` (required), `include_discussions` (default true), `include_system` (default false), `limit` for threads. Returns `issue`, `discussions`, `related_merge_requests` and `linked_issues` (each with its `link_type`) |
 
 `get` returns the issue with its description, `discussions` (threads with notes; system notes such
 as label changes excluded unless asked, every page scanned), `discussions_total`, and
@@ -77,7 +78,7 @@ as label changes excluded unless asked, every page scanned), `discussions_total`
 | `action` | Parameters | Returns |
 |---|---|---|
 | `list` (default) | `project`, `status`, `ref`, `sha`, `source`, `username`, `order_by`, `sort`, `updated_after`, `updated_before`; or `latest: true` with optional `ref` | pipelines, or `pipeline` |
-| `get` | `project`, `pipeline_id`, `include_retried` | `pipeline`, `jobs`, `failed_jobs` (failed and not `allow_failure`), `stages` (status counts per stage) |
+| `get` | `project`, `pipeline_id`, `include_retried` | `pipeline`, `jobs`, `failed_jobs` (failed and not `allow_failure`), `stages` (status counts per stage), `bridges` (trigger jobs with their `downstream_pipeline`) |
 | `jobs` | `project`, `pipeline_id` (optional: project-wide when omitted), `scope` (job statuses; ignored by `list`, which takes `status`), `include_retried` | jobs |
 | `job` | `project`, `job_id` | `job` |
 | `log` | `project`, `job_id`, `tail_lines` (default 200, capped by `max_log_lines`), or `search` (regex) with `context` (default 2) and `max_matches` (default 50) | `job`, `log`, `total_lines`, `returned_lines` / `matches`, `truncated`, `redacted` |
@@ -105,6 +106,13 @@ after percent-decoding and lower-casing, so encoded or upper-case spellings are 
 `allow_raw_writes` (`allow_raw_delete` too for DELETE), passes the write gate (mode, `write_projects`
 when the path is under `projects/:id/`), and refuses administrative surfaces. Non-GET calls are
 audited as `api.<METHOD>` and their results are returned as GitLab sent them (lists cut at 50).
+
+Raw results are secret-redacted like every other read when `redact_secrets` is on (`redacted` counts the
+masks). A GET result larger than `max_file_bytes` is returned as clipped text with `truncated: true`;
+narrow it with `params`, page with `paginate` and `limit`, or use a typed tool. A path is rejected when
+any percent-decoded segment is `..`, and the deny-lists also match the path with `..` resolved.
+Redirects are never followed: a 3xx from GitLab is reported as an error so the token is not sent to
+another host; set `GITLAB_URL` to the address GitLab redirects to.
 
 ## gitlab_issue_write
 
@@ -147,7 +155,7 @@ Needs `api` and Developer (run, retry, play) or the pipeline's owner / Maintaine
 
 | `action` | Parameters |
 |---|---|
-| `run` | `ref` (required), `variables` (`KEY: value`) |
+| `run` | `ref` (required), `variables` (`KEY: value`), `inputs` (pipeline inputs as `name: value`, GitLab 17.7+) |
 | `retry` | exactly one of `pipeline_id`, `job_id` |
 | `cancel` | exactly one of `pipeline_id`, `job_id` |
 | `play` | `job_id` (a manual job) |
@@ -160,12 +168,16 @@ Needs `api` and push rights on `branch` (protected branches refuse per GitLab's 
 |---|---|
 | `branch` | required; must exist unless `start_branch` is given |
 | `start_branch` | creates `branch` from this branch when it does not exist; ignored when it does |
-| `commit_message` | required |
-| `actions` | 1 to 100 of `{action: create|update|delete|move|chmod, file_path, content, previous_path, encoding, execute_filemode, last_commit_id}`; total content under 2 MB; no `..` segments |
+| `commit_message` | required when `actions` is given |
+| `actions` | 1 to 100 of `{action: create|update|delete|move|chmod, file_path, content, previous_path, encoding, execute_filemode, last_commit_id}`; total content under 2 MB; no `..` segments. Omit it, with `start_branch`, to only create `branch` (`POST repository/branches`, action `branch.create`); that is rejected when the branch already exists |
 | `author_name`, `author_email` | optional |
 | `expected_head_sha` | head of `branch` (or of `start_branch` for a new branch) as last read; a moved head stops the commit |
 
-Result: the commit (`id`, `short_id`, `title`, `stats`, `web_url`). GitLab rejects `create` on an
+`dry_run` previews clip each file's `content` to its first 200 characters; the full content is what is sent
+(and, in `operator_only` mode, what is staged).
+
+Result: the commit (`id`, `short_id`, `title`, `stats`, `web_url`), or the branch for a branch-only
+call. GitLab rejects `create` on an
 existing path and `update`/`delete`/`move` on a missing one with a 400 that the tool reports verbatim.
 
 ## Common result fields

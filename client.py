@@ -12,7 +12,7 @@ import os
 import re
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 API_PREFIX = "api/v4"
 _DEFAULT_TIMEOUT = 30.0
@@ -151,6 +151,14 @@ def validate_path(path: Any) -> str:
         raise GitLabError("put query parameters in 'params', not in the path")
     if any(segment in {"..", "."} for segment in clean.split("/")):
         raise GitLabError(f"invalid path {path!r}")
+    decoded = clean
+    for _ in range(3):  # a reverse proxy may normalise %2e%2e to .. before GitLab sees the path
+        step = unquote(decoded)
+        if step == decoded:
+            break
+        decoded = step
+    if "\\" in decoded or any(segment in {"..", "."} for segment in decoded.split("/")):
+        raise GitLabError(f"invalid path {path!r}")
     if not _PATH_RE.match(clean):
         raise GitLabError(f"invalid path {path!r}")
     return clean
@@ -233,7 +241,14 @@ class GitLabClient:
             headers["Content-Type"] = "application/json"
         try:
             resp = self._session.request(
-                method, url, params=params or None, json=json, headers=headers, timeout=self.timeout, verify=self.verify
+                method,
+                url,
+                params=params or None,
+                json=json,
+                headers=headers,
+                timeout=self.timeout,
+                verify=self.verify,
+                allow_redirects=False,  # never carry PRIVATE-TOKEN to another host
             )
         except Exception as exc:  # transport failure — DNS, TLS, refused, timeout
             self.last_call = {"method": method, "path": f"/{API_PREFIX}/{path}", "status": 0}
@@ -241,6 +256,17 @@ class GitLabClient:
         status = int(getattr(resp, "status_code", 0) or 0)
         self.last_headers = {str(k).lower(): str(v) for k, v in dict(getattr(resp, "headers", None) or {}).items()}
         self.last_call = {"method": method, "path": f"/{API_PREFIX}/{path}", "status": status}
+        if 300 <= status < 400:
+            location = self.last_headers.get("location") or "an unknown address"
+            raise GitLabError(
+                self.scrub(
+                    f"{method} /{API_PREFIX}/{path} -> HTTP {status} redirect to {location}; redirects are not "
+                    "followed so the token is never sent elsewhere. Set GITLAB_URL to the address GitLab redirects to"
+                ),
+                status=status,
+                method=method,
+                path=path,
+            )
         if status == 429 and _retry:
             try:
                 wait = float(self.last_headers.get("retry-after") or 1.0)

@@ -15,7 +15,7 @@ Ten tools, one rule: **nothing is written to GitLab without the user having seen
 | Tool | Writes? | Use it to |
 |---|---|---|
 | `gitlab_search` | no | Find a project by name; free-text search of issues, MRs, code, users |
-| `gitlab_repo` | no | Browse a tree, read a file (line ranges), list commits, show a commit's diff, compare refs, list branches/tags |
+| `gitlab_repo` | no | Project metadata; browse a tree, read a file (line ranges), list commits, show a commit's diff, compare refs, list branches/tags |
 | `gitlab_issues` | no | List issues with filters; read one with its discussion and related MRs |
 | `gitlab_merge_requests` | no | List MRs; read one (status, approvals, pipeline, `sha`); its diff, review threads, commits, pipelines |
 | `gitlab_pipelines` | no | List pipelines; one pipeline with jobs and failures; a job's log (tail or search) |
@@ -68,8 +68,8 @@ Then `retry` the job or pipeline with `gitlab_pipeline_write` once the user agre
 
 1. Read the branch head: `gitlab_repo` `branches` with `name`, or `commits` with `ref`; keep `commit.id`.
 2. `gitlab_commit` with `branch` (a new name and `start_branch`, unless the user wants an existing
-   branch), full file contents in `actions`, and `expected_head_sha`. Never commit to a protected branch
-   directly; never include credentials in content.
+   branch), full file contents in `actions`, and `expected_head_sha`. Without `actions` it only creates
+   the branch. Never commit to a protected branch directly; never include credentials in content.
 3. `gitlab_mr_write` `create` with `source_branch`, `target_branch`, `title`, `description`, and
    `reviewers`. Set `draft: true` if the work is not ready.
 

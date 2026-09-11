@@ -100,14 +100,18 @@ GITLAB_SEARCH = _schema(
 
 GITLAB_REPO = _schema(
     "gitlab_repo",
-    "Read a repository. Read-only. action=tree lists a directory; file returns decoded text content "
+    "Read a repository. Read-only. action=project returns the project's metadata (default branch, "
+    "visibility, merge settings); tree lists a directory; file returns decoded text content "
     "(optionally a line range; binaries report size only); commits lists history (filter by ref, path, "
     "author, since/until); commit shows one commit with its diff; compare diffs two refs; branches and "
     "tags list refs (or one branch by name). Diffs and files are capped by the operator; ask for paths "
     "or line ranges to focus.",
     {
         "project": PROJECT,
-        "action": {"type": "string", "enum": ["tree", "file", "commits", "commit", "compare", "branches", "tags"]},
+        "action": {
+            "type": "string",
+            "enum": ["project", "tree", "file", "commits", "commit", "compare", "branches", "tags"],
+        },
         "ref": {"type": "string", "description": "Branch, tag or sha (default: the default branch)."},
         "path": {"type": "string", "description": "Directory (tree/commits) or file path (file)."},
         "recursive": {"type": "boolean", "description": "tree: descend into subdirectories."},
@@ -445,6 +449,11 @@ GITLAB_PIPELINE_WRITE = _schema(
             "description": "run: CI variables as KEY: value.",
             "additionalProperties": {"type": "string"},
         },
+        "inputs": {
+            "type": "object",
+            "description": "run: pipeline inputs (spec:inputs) as name: value, GitLab 17.7+.",
+            "additionalProperties": True,
+        },
         "pipeline_id": {"type": "integer", "minimum": 1},
         "job_id": {"type": "integer", "minimum": 1},
         "dry_run": DRY_RUN,
@@ -457,14 +466,15 @@ GITLAB_COMMIT = _schema(
     "Commit file changes to a branch in one atomic commit. WRITES to GitLab: show the user the files and the "
     "message and get confirmation first (dry_run=true previews). branch must exist, or pass start_branch to "
     "create it from an existing branch. actions is an ordered list of create/update/delete/move/chmod "
-    "operations with full file contents. Pass expected_head_sha (the branch head you read) so the commit is "
-    "refused if someone pushed in between. Never commit secrets. Open a merge request afterwards with "
-    "gitlab_mr_write rather than committing to protected branches.",
+    "operations with full file contents; omit actions (with start_branch) to only create the branch. Pass "
+    "expected_head_sha (the branch head you read) so the commit is refused if someone pushed in between. "
+    "Never commit secrets. Open a merge request afterwards with gitlab_mr_write rather than committing to "
+    "protected branches.",
     {
         "project": PROJECT,
         "branch": {"type": "string", "description": "Target branch."},
         "start_branch": {"type": "string", "description": "Create branch from this branch when it does not exist yet."},
-        "commit_message": {"type": "string"},
+        "commit_message": {"type": "string", "description": "Required when actions is given."},
         "actions": {
             "type": "array",
             "minItems": 1,
@@ -497,7 +507,7 @@ GITLAB_COMMIT = _schema(
         },
         "dry_run": DRY_RUN,
     },
-    required=["project", "branch", "commit_message", "actions"],
+    required=["project", "branch"],
 )
 
 READ = (GITLAB_SEARCH, GITLAB_REPO, GITLAB_ISSUES, GITLAB_MERGE_REQUESTS, GITLAB_PIPELINES, GITLAB_API)

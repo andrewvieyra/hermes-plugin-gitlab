@@ -39,7 +39,7 @@ SEARCH_SCOPES = (
     "notes",
 )
 ADVANCED_SCOPES = {"blobs", "commits", "wiki_blobs", "notes"}
-REPO_ACTIONS = ("tree", "file", "commits", "commit", "compare", "branches", "tags")
+REPO_ACTIONS = ("project", "tree", "file", "commits", "commit", "compare", "branches", "tags")
 ISSUE_ACTIONS = ("list", "get")
 MR_ACTIONS = ("list", "get", "diffs", "discussions", "commits", "pipelines")
 PIPELINE_ACTIONS = ("list", "get", "jobs", "job", "log")
@@ -179,6 +179,26 @@ def _redact_content(text: str) -> tuple:
 
 def _content_redactor() -> Optional[Callable[[str], tuple]]:
     return render.redact_content if get_settings().redact_secrets else None
+
+
+def _redact_any(obj: Any) -> Tuple[Any, int]:
+    """Every string in a raw API result, at any depth (the shape is unknown, so no key list applies)."""
+    if not get_settings().redact_secrets:
+        return obj, 0
+    return render.redact_any(obj)
+
+
+def _cap_raw(body: Any, max_chars: int) -> Tuple[Any, bool]:
+    """A raw GET result is returned as GitLab sent it unless it is larger than ``max_file_bytes``; then it
+    is clipped to text so one call cannot dump a whole file or a huge list into the model's context."""
+    text = body if isinstance(body, str) else json.dumps(body, ensure_ascii=False, default=str)
+    if len(text) <= max_chars:
+        return body, False
+    return (
+        render.clip(text, max_chars)
+        + " (result larger than max_file_bytes: narrow it with params, use paginate with limit, or a typed tool)",
+        True,
+    )
 
 
 _USER_TEXT_KEYS = ("description", "body", "message", "title", "data")
@@ -387,6 +407,8 @@ def gitlab_repo(args: Dict[str, Any], **_: Any) -> str:
     project = _project(client, args)
     ref = str(args.get("ref") or "").strip() or None
     base = targets.p_project(project)
+    if action == "project":
+        return _ok(project=project, metadata=render.project(client.project(project), full=True))
     if action == "tree":
         params: Dict[str, Any] = {}
         _pass(params, args, "path")
@@ -559,6 +581,11 @@ def gitlab_issues(args: Dict[str, Any], **_: Any) -> str:
         with contextlib.suppress(GitLabError):
             related, _t, _u = client.paginate(f"{targets.p_issue(project, iid)}/related_merge_requests", max_results=20)
             out["related_merge_requests"] = [render.merge_request(m) for m in related]
+        with contextlib.suppress(GitLabError):
+            links, _t, _u = client.paginate(f"{targets.p_issue(project, iid)}/links", max_results=20)
+            out["linked_issues"] = [
+                dict(render.issue(row), link_type=row.get("link_type")) for row in links if isinstance(row, dict)
+            ]
         out, out["redacted"] = _redact_user_text(out)
         return _ok(**out)
     project = _project(client, args, required=False)
@@ -766,6 +793,10 @@ def gitlab_pipelines(args: Dict[str, Any], **_: Any) -> str:
             f"{targets.p_pipeline(project, pipeline_id)}/jobs", params, max_results=200
         )
         jobs = [render.job(j) for j in rows]
+        bridges: List[Dict[str, Any]] = []
+        with contextlib.suppress(GitLabError):  # trigger jobs and the downstream pipelines they started
+            rows_b, _tb, _ub = client.paginate(f"{targets.p_pipeline(project, pipeline_id)}/bridges", max_results=50)
+            bridges = [render.bridge(b) for b in rows_b]
         failed = [j for j in jobs if j.get("status") == "failed" and not j.get("allow_failure")]
         stages: Dict[str, Dict[str, int]] = {}
         for j in jobs:
@@ -779,6 +810,7 @@ def gitlab_pipelines(args: Dict[str, Any], **_: Any) -> str:
             jobs_truncated=truncated,
             failed_jobs=failed,
             stages=stages,
+            bridges=bridges,
         )
     if action == "jobs":
         pipeline_id = targets.optional_int(args.get("pipeline_id"), "pipeline_id")
@@ -860,18 +892,36 @@ def gitlab_api(args: Dict[str, Any], **kwargs: Any) -> str:
         )
         return _fail(refusal, refused=True)
     params = args.get("params") if isinstance(args.get("params"), dict) else {}
+    settings = get_settings()
     if _flag(args, "paginate", False):
         rows, total, truncated = client.paginate(path, params, max_results=_limit(args, 100))
+        rows, redacted = _redact_any(rows)
+        results, clipped = _cap_raw(rows, settings.max_file_bytes)
         return _ok(
-            method="GET", path=f"/api/v4/{path}", count=total, returned=len(rows), truncated=truncated, results=rows
+            method="GET",
+            path=f"/api/v4/{path}",
+            count=total,
+            returned=len(rows),
+            truncated=truncated or clipped,
+            redacted=redacted,
+            results=results,
         )
     body = client.get(path, params)
     truncated = False
-    if isinstance(body, list) and len(body) > get_settings().max_results:
-        body, truncated = body[: get_settings().max_results], True
+    if isinstance(body, list) and len(body) > settings.max_results:
+        body, truncated = body[: settings.max_results], True
+    body, redacted = _redact_any(body)
+    body, clipped = _cap_raw(body, settings.max_file_bytes)
     headers = client.last_headers
     pagination = {k: headers.get(k) for k in ("x-total", "x-page", "x-per-page", "x-next-page") if headers.get(k)}
-    return _ok(method="GET", path=f"/api/v4/{path}", truncated=truncated, pagination=pagination or None, result=body)
+    return _ok(
+        method="GET",
+        path=f"/api/v4/{path}",
+        truncated=truncated or clipped,
+        redacted=redacted,
+        pagination=pagination or None,
+        result=body,
+    )
 
 
 # -- write tools ----------------------------------------------------------------------------------
@@ -944,6 +994,16 @@ def _write(
         return _fail(
             f"could not prepare the write: {exc}", rejected=True, status=exc.status or None, gitlab=exc.to_dict()
         )
+    except Exception as exc:  # a builder bug still leaves an audit trail and never raises into the agent loop
+        audit.emit(
+            "write_rejected",
+            actor=actor,
+            gitlab_url=client.base_url,
+            action=label,
+            project=project,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return _fail(f"could not prepare the write: {type(exc).__name__}: {exc}", rejected=True)
     result = executor.perform(
         client, req, actor=actor, settings=settings, store=get_store(), dry_run=_flag(args, "dry_run", False)
     )

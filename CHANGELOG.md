@@ -6,6 +6,32 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `gitlab_repo` `action=project`: project metadata (default branch, visibility, merge settings).
+- `gitlab_commit` without `actions` creates `branch` from `start_branch` (bound to that head with
+  `expected_head_sha`); action `branch.create` in the audit trail.
+- `gitlab_pipeline_write` `run` accepts `inputs` (pipeline inputs, GitLab 17.7+).
+- `gitlab_pipelines` `get` lists trigger jobs with their downstream pipelines (`bridges`); `gitlab_issues`
+  `get` lists `linked_issues`.
+- Commit previews clip each file's content to 200 characters so a dry run does not echo a large commit back.
+
+### Security
+- Redirects are never followed: a 3xx from GitLab is an error, so `PRIVATE-TOKEN` cannot be sent to another host.
+- Raw paths are rejected when a percent-decoded segment is `..`, and the deny-lists also match the path
+  with `..` resolved, in case a reverse proxy normalises it before GitLab.
+- `gitlab_api` refuses `triggers` and `tokens` surfaces for every method, and `POST projects`, `POST groups`,
+  `merged_branches` and LDAP/SAML group links for non-GET.
+- Raw `gitlab_api` results (GET and write responses) are secret-redacted like every other read, and GET
+  results larger than `max_file_bytes` are clipped.
+- Secret redaction covers routable GitLab tokens (with `.` segments), legacy runner registration tokens
+  and OpenAI/Anthropic, Stripe, Google, npm, Hugging Face and PyPI token formats.
+
+### Fixed
+- Diff comments on renamed files send the file's real `old_path` instead of repeating `new_path`.
+- GitLab URLs under a relative URL root (`https://host/gitlab/group/project`) resolve to the right project;
+  group, admin and explore URLs are no longer mistaken for projects.
+- A builder bug is reported as a rejected write with an audit event instead of a bare exception message.
+
 ## [0.1.0] - 2026-09-09
 
 ### Added

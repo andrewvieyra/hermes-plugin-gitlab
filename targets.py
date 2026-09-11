@@ -24,6 +24,21 @@ _KINDS = {
     "branches": "branch",
 }
 _PROJECT_RE = re.compile(r"^[A-Za-z0-9_.][A-Za-z0-9_.\-]*(?:/[A-Za-z0-9_.][A-Za-z0-9_.\-]*)+$")
+# Top-level web paths that are never a namespace: a URL under them names a group, an admin page or a
+# listing, not a project.
+_RESERVED_ROOTS = {
+    "-",
+    "admin",
+    "api",
+    "dashboard",
+    "explore",
+    "groups",
+    "help",
+    "oauth",
+    "profile",
+    "uploads",
+    "users",
+}
 
 
 def parse_url(url: str, base_url: Optional[str] = None) -> Optional[Dict[str, Any]]:
@@ -38,7 +53,11 @@ def parse_url(url: str, base_url: Optional[str] = None) -> Optional[Dict[str, An
         if expected and parts.netloc.lower() != expected:
             raise GitLabError(f"URL host {parts.netloc!r} is not the configured GitLab host {expected!r}")
     path = unquote(parts.path).strip("/")
-    if not path or path.startswith("api/"):
+    if base_url:  # GitLab served under a relative URL root: https://host/gitlab/group/project
+        prefix = urlsplit(base_url).path.strip("/")
+        if prefix and (path == prefix or path.startswith(prefix + "/")):
+            path = path[len(prefix) :].strip("/")
+    if not path or path.startswith("api/") or path.split("/")[0].lower() in _RESERVED_ROOTS:
         return None
     if "/-/" in path:
         project, rest = path.split("/-/", 1)

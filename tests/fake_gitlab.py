@@ -434,6 +434,7 @@ class FakeGitLab:
         headers: Any = None,
         timeout: Any = None,
         verify: Any = None,
+        allow_redirects: bool = True,
     ) -> _Response:
         parts = urlsplit(url)
         assert url.startswith(self.base_url + "/api/v4/"), url
@@ -555,6 +556,7 @@ class FakeGitLab:
                     q,
                 ),
             ),
+            ("POST", re.compile(P + r"/repository/branches"), self._create_branch),
             ("GET", re.compile(P + r"/repository/branches/(?P<branch>[^/]+)"), self._branch),
             ("GET", re.compile(P + r"/repository/tags"), lambda m, q, j: self._page(self._tags(self._p(m)["id"]), q)),
             ("GET", re.compile(r"issues"), lambda m, q, j: self._issue_list(None, q)),
@@ -895,6 +897,23 @@ class FakeGitLab:
                 "web_url": f"{project['web_url']}/-/compare/{frm}...{to}",
             },
         )
+
+    def _create_branch(self, m, q, j) -> _Response:
+        project = self._p(m)
+        pid = project["id"]
+        body = j if isinstance(j, dict) else {}
+        name, ref = body.get("branch") or q.get("branch"), body.get("ref") or q.get("ref")
+        if not name or not ref:
+            return _Response(400, {"message": "branch and ref are required"})
+        if name in self.branches[pid]:
+            return _Response(400, {"message": "Branch already exists"})
+        source = self.branches[pid].get(ref)
+        if source is None:
+            return _Response(400, {"message": "Invalid reference name"})
+        branch = self._branch_obj(pid, name, source["commit"])
+        self.branches[pid][name] = branch
+        self.files[(pid, name)] = dict(self.files.get((pid, ref), {}))
+        return _Response(201, dict(branch))
 
     def _branch(self, m, q, j) -> _Response:
         project = self._p(m)

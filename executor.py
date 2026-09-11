@@ -19,6 +19,7 @@ Nothing in this module is GitLab-resource specific beyond the two precondition k
 
 from __future__ import annotations
 
+import posixpath
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -47,6 +48,8 @@ _SENSITIVE = [
     r"(^|/)access_tokens(/|$)",
     r"(^|/)deploy_keys(/|$)",
     r"(^|/)hooks(/|$)",
+    r"(^|/)triggers(/|$)",  # pipeline trigger tokens
+    r"(^|/)tokens(/|$)",  # cluster agent tokens and similar
     r"(^|/)secure_files(/|$)",
     r"(^|/)integrations(/|$)",
     r"(^|/)services(/|$)",
@@ -71,6 +74,9 @@ _ADMIN = [
     r"^users(/|$)",
     r"^groups/[^/]+$",
     r"^projects/[^/]+$",
+    r"^(projects|groups)$",  # creating projects or groups
+    r"(^|/)merged_branches$",  # deletes every merged branch at once
+    r"(^|/)(ldap_group_links|saml_group_links)(/|$)",
     r"(^|/)members(/|$)",
     r"(^|/)share(/|$)",
     r"(^|/)protected_(branches|tags|environments)(/|$)",
@@ -92,16 +98,19 @@ _ADMIN_RE = [re.compile(p) for p in _ADMIN]
 
 def path_forms(path: str) -> List[str]:
     """Every spelling GitLab may resolve *path* to: as given, percent-decoded (repeatedly, for double
-    encoding), lower-cased, with duplicate slashes collapsed. The deny-lists match all of them, so
-    ``projects/1/%76ariables`` or ``PROJECTS/1//VARIABLES`` cannot slip past ``variables``. The
-    encoded form is kept too, so ``projects/group%2Fproj`` still matches the project-level rules."""
+    encoding), lower-cased, with duplicate slashes collapsed and ``..`` segments resolved (a reverse
+    proxy may do that before GitLab sees the path). The deny-lists match all of them, so
+    ``projects/1/%76ariables``, ``PROJECTS/1//VARIABLES`` or ``projects/1/%2e%2e/%2e%2e/admin`` cannot
+    slip past. The encoded form is kept too, so ``projects/group%2Fproj`` still matches the
+    project-level rules."""
     forms: List[str] = []
     current = path
     for _ in range(3):
         for form in (current, current.lower()):
             form = re.sub(r"/{2,}", "/", form).strip("/")
-            if form not in forms:
-                forms.append(form)
+            for candidate in (form, posixpath.normpath(form) if form else form):
+                if candidate and candidate not in forms:
+                    forms.append(candidate)
         decoded = unquote(current)
         if decoded == current:
             break
@@ -147,18 +156,37 @@ class WriteRequest:
         return cls(**{k: v for k, v in data.items() if k in known})
 
     def preview(self) -> Dict[str, Any]:
+        payload = self.json
+        if self.action == "commit.create" and isinstance(payload, dict) and isinstance(payload.get("actions"), list):
+            payload = dict(payload, actions=[_clip_action(a) for a in payload["actions"]])
         return {
             "summary": self.summary,
             "method": self.method,
             "path": f"/api/v4/{self.path}",
             "params": self.params,
-            "json": self.json,
+            "json": payload,
             "project": self.project,
             "preconditions": self.preconditions,
             "requires": self.requires,
             "irreversible": self.irreversible,
             "notes": self.notes,
         }
+
+
+_PREVIEW_CONTENT_CHARS = 200
+
+
+def _clip_action(action: Any) -> Any:
+    """A commit preview shows the head of each file, not the whole content the model just sent."""
+    if not isinstance(action, dict) or not isinstance(action.get("content"), str):
+        return action
+    content = action["content"]
+    if len(content) <= _PREVIEW_CONTENT_CHARS:
+        return action
+    rest = len(content) - _PREVIEW_CONTENT_CHARS
+    return dict(
+        action, content=content[:_PREVIEW_CONTENT_CHARS] + f"… [{rest} more characters; the full content is sent]"
+    )
 
 
 # -- gate -----------------------------------------------------------------------------------------
@@ -310,6 +338,11 @@ def describe_result(req: WriteRequest, body: Any) -> Dict[str, Any]:
         data = render.commit(body, full=True)
         ids = {"sha": data.get("id"), "web_url": data.get("web_url")}
         report = f"Commit {data.get('short_id')} {verb}: {data.get('title')} {data.get('web_url')}"
+    elif kind == "branch":
+        data = render.branch(body)
+        head = data.get("commit") or {}
+        ids = {"branch": data.get("name"), "sha": head.get("id"), "web_url": data.get("web_url")}
+        report = f"Branch {data.get('name')} {verb} at {head.get('short_id')} {data.get('web_url')}"
     elif kind == "approval":
         data = render.approvals(body) or body
         ids = {"iid": req.target.get("iid")}
@@ -430,6 +463,8 @@ def perform(
             **base,
         }
     described = describe_result(req, body)
+    if req.result_kind == "raw" and settings.redact_secrets:
+        described["data"], _redacted = render.redact_any(described["data"])
     _emit(
         "write_done",
         client,

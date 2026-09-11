@@ -492,9 +492,11 @@ def _locate_position(
             f"{new_path} is not changed in !{iid}; diff comments go on files in the merge request diff",
             field="position",
         )
+    # GitLab wants the diff's own paths: for a renamed file old_path is the previous name.
+    paths = {"new_path": item.get("new_path") or new_path, "old_path": item.get("old_path") or old_path}
     text = item.get("diff") or ""
     if not text:  # too large or collapsed: nothing to check against, send what the model gave
-        return {k: v for k, v in (("new_line", new_line), ("old_line", old_line)) if v is not None}
+        return {**paths, **{k: v for k, v in (("new_line", new_line), ("old_line", old_line)) if v is not None}}
     located = render.locate_diff_line(text, new_line=new_line, old_line=old_line)
     if located is None:
         where = f"new line {new_line}" if new_line is not None else f"old line {old_line}"
@@ -508,7 +510,8 @@ def _locate_position(
         raise WriteError(
             f"new line {new_line} of {new_path} is old line {located['old_line']}, not {old_line}", field="position"
         )
-    return {k: v for k, v in (("new_line", located["new_line"]), ("old_line", located["old_line"])) if v is not None}
+    lines = {k: v for k, v in (("new_line", located["new_line"]), ("old_line", located["old_line"])) if v is not None}
+    return {**paths, **lines}
 
 
 def _mr_approve(client: GitLabClient, project: str, args: Dict[str, Any]) -> WriteRequest:
@@ -631,12 +634,21 @@ def pipeline(client: GitLabClient, args: Dict[str, Any], settings: Settings) -> 
                     raise WriteError(f"variables: invalid key {key!r}", field="variables")
                 rows.append({"key": str(key), "value": "" if value is None else str(value)})
             payload["variables"] = rows
+        inputs = args.get("inputs")
+        if inputs:
+            if not isinstance(inputs, dict):
+                raise WriteError("inputs must be an object of name: value pairs", field="inputs")
+            payload["inputs"] = dict(inputs)
+        extras = [
+            f"{len(payload['variables'])} variable(s)" if variables else "",
+            f"{len(inputs)} input(s)" if inputs else "",
+        ]
         return WriteRequest(
             action="pipeline.run",
             method="POST",
             path=f"{targets.p_project(project)}/pipeline",
             summary=f"Run pipeline on {ref} in {project}"
-            + (f" with {len(payload.get('variables', []))} variable(s)" if variables else ""),
+            + (" with " + ", ".join(e for e in extras if e) if any(extras) else ""),
             project=project,
             json=payload,
             target=_target("pipeline", ref=ref),
@@ -689,13 +701,58 @@ def _file_path(value: Any, field: str) -> str:
     return text
 
 
+def _branch_lookup(client: GitLabClient, project: str, branch: str) -> Optional[Dict[str, Any]]:
+    try:
+        return client.get(targets.p_branch(project, branch))
+    except GitLabError as exc:
+        if exc.status != 404:
+            raise
+        return None
+
+
+def _branch_create(
+    client: GitLabClient, project: str, branch: str, start_branch: Optional[str], expected: Optional[str]
+) -> WriteRequest:
+    """``gitlab_commit`` without ``actions``: only create *branch* from *start_branch*."""
+    if not start_branch:
+        raise WriteError(
+            "actions is empty: pass file actions to commit, or start_branch to only create the branch", field="actions"
+        )
+    if _branch_lookup(client, project, branch) is not None:
+        raise WriteError(f"branch {branch!r} already exists in {project}", field="branch")
+    preconditions = (
+        [{"kind": "branch_head", "project": project, "branch": start_branch, "sha": expected}] if expected else []
+    )
+    notes = (
+        [] if expected else ["No expected_head_sha given: the branch starts at whatever start_branch points to now."]
+    )
+    return WriteRequest(
+        action="branch.create",
+        method="POST",
+        path=f"{targets.p_project(project)}/repository/branches",
+        summary=f"Create branch {branch} from {start_branch} in {project}",
+        project=project,
+        json={"branch": branch, "ref": start_branch},
+        target=_target("branch", branch=branch, ref=start_branch),
+        preconditions=preconditions,
+        result_kind="branch",
+        notes=notes,
+    )
+
+
 def commit(client: GitLabClient, args: Dict[str, Any], settings: Settings) -> WriteRequest:
     project = _project(client, args)
     branch = _text(args, "branch", required=True, limit=255)
-    message = _text(args, "commit_message", required=True)
     raw_actions = args.get("actions")
-    if not isinstance(raw_actions, list) or not raw_actions:
-        raise WriteError("actions must be a non-empty list of file operations", field="actions")
+    if raw_actions in (None, "", []):
+        return _branch_create(
+            client, project, branch, _text(args, "start_branch", limit=255), _sha(args, "expected_head_sha")
+        )
+    message = _text(args, "commit_message", required=True)
+    if not isinstance(raw_actions, list):
+        raise WriteError(
+            "actions must be a list of file operations (omit it to only create the branch)", field="actions"
+        )
     if len(raw_actions) > MAX_COMMIT_ACTIONS:
         raise WriteError(f"at most {MAX_COMMIT_ACTIONS} actions per commit", field="actions")
     actions: List[Dict[str, Any]] = []
@@ -743,12 +800,7 @@ def commit(client: GitLabClient, args: Dict[str, Any], settings: Settings) -> Wr
     start_branch = _text(args, "start_branch", limit=255)
     expected = _sha(args, "expected_head_sha")
     notes: List[str] = []
-    try:
-        existing = client.get(targets.p_branch(project, branch))
-    except GitLabError as exc:
-        if exc.status != 404:
-            raise
-        existing = None
+    existing = _branch_lookup(client, project, branch)
     if existing is None:
         if not start_branch:
             raise WriteError(

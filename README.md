@@ -126,15 +126,15 @@ Environment variables:
 | Tool | Writes | Purpose |
 |---|---|---|
 | `gitlab_search` | no | Find projects by name; free-text search of issues, MRs, milestones, users, code, commits |
-| `gitlab_repo` | no | Tree, file (line ranges, binaries reported not dumped), commits, one commit with diff, compare, branches, tags |
-| `gitlab_issues` | no | Filtered lists; one issue with description, discussion threads and related MRs |
+| `gitlab_repo` | no | Project metadata, tree, file (line ranges, binaries reported not dumped), commits, one commit with diff, compare, branches, tags |
+| `gitlab_issues` | no | Filtered lists; one issue with description, discussion threads, related MRs and linked issues |
 | `gitlab_merge_requests` | no | Filtered lists; one MR with merge status, approvals, head pipeline and `sha`; diffs; review threads; commits; pipelines |
-| `gitlab_pipelines` | no | Pipelines, one pipeline with jobs and failures, jobs by status, a job's log (tail or regex search, colour and sections stripped) |
+| `gitlab_pipelines` | no | Pipelines, one pipeline with jobs, failures and downstream pipelines, jobs by status, a job's log (tail or regex search, colour and sections stripped) |
 | `gitlab_api` | GET, or gated | Any other endpoint; `path: status` for connectivity, token scopes and write mode |
 | `gitlab_issue_write` | yes | Create, edit, close/reopen, comment, reply, internal notes |
 | `gitlab_mr_write` | yes | Create, edit, comment (general, reply, on a diff line), approve, unapprove, merge, rebase, resolve |
-| `gitlab_pipeline_write` | yes | Run with variables, retry, cancel, play a manual job |
-| `gitlab_commit` | yes | One atomic commit of create/update/delete/move/chmod actions, optionally creating the branch |
+| `gitlab_pipeline_write` | yes | Run with variables and inputs, retry, cancel, play a manual job |
+| `gitlab_commit` | yes | One atomic commit of create/update/delete/move/chmod actions, creating the branch first if needed, or just the branch |
 
 Every write tool accepts `dry_run: true` and returns the exact method, path, payload, preconditions
 and required flags without sending anything. Full parameter reference: [docs/tools.md](docs/tools.md).

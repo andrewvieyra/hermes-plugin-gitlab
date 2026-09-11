@@ -92,12 +92,19 @@ def search_lines(text: str, pattern: str, *, context: int = 2, max_matches: int 
 
 # High-confidence token formats: safe to mask in code, diffs and logs alike.
 _HIGH_CONFIDENCE = [
-    ("gitlab token", re.compile(r"\bgl[a-z]{2,6}-[A-Za-z0-9_\-]{20,}\b")),
+    ("gitlab token", re.compile(r"\bgl[a-z]{2,6}-[A-Za-z0-9_.\-]{20,}")),  # routable tokens carry '.' segments
+    ("gitlab runner registration token", re.compile(r"\bGR1348941[A-Za-z0-9_\-]{20,}")),
     ("github token", re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b|\bgithub_pat_[A-Za-z0-9_]{20,}\b")),
     ("aws access key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
     ("slack token", re.compile(r"\bxox[abprs]-[A-Za-z0-9\-]{10,}\b")),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\b")),
     ("private key", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----")),
+    ("openai / anthropic key", re.compile(r"\bsk-(?:ant-|proj-|svcacct-)?[A-Za-z0-9_\-]{20,}")),
+    ("stripe key", re.compile(r"\b[sr]k_(?:live|test)_[A-Za-z0-9]{16,}\b")),
+    ("google api key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
+    ("npm token", re.compile(r"\bnpm_[A-Za-z0-9]{36}\b")),
+    ("hugging face token", re.compile(r"\bhf_[A-Za-z0-9]{30,}\b")),
+    ("pypi token", re.compile(r"\bpypi-AgEIcHlwaS5vcmc[A-Za-z0-9_\-]{40,}")),
     ("bearer header", re.compile(r"(?i)(authorization:\s*bearer\s+)[A-Za-z0-9._\-]{8,}")),
     ("basic auth url", re.compile(r"(?i)(https?://[^/\s:@]+:)[^@\s/]{4,}(?=@)")),
 ]
@@ -158,6 +165,29 @@ def redact_fields(obj: Any, keys: Iterable[str]) -> Tuple[Any, int]:
             _, n = redact_fields(value, wanted)
             count += n
     return obj, count
+
+
+def redact_any(obj: Any) -> Tuple[Any, int]:
+    """:func:`redact_content` applied to every string at any depth of dicts and lists (raw API results,
+    whose shape is unknown). Returns a redacted copy and the count; the input is left untouched."""
+    if isinstance(obj, str):
+        return redact_content(obj)
+    if isinstance(obj, dict):
+        out: Dict[str, Any] = {}
+        count = 0
+        for key, value in obj.items():
+            out[key], n = redact_any(value)
+            count += n
+        return out, count
+    if isinstance(obj, list):
+        items: List[Any] = []
+        count = 0
+        for value in obj:
+            item, n = redact_any(value)
+            items.append(item)
+            count += n
+        return items, count
+    return obj, 0
 
 
 # -- summaries -------------------------------------------------------------------------------------
@@ -378,6 +408,18 @@ def job(j: Any) -> Dict[str, Any]:
         "artifacts": [a.get("filename") for a in artifacts if isinstance(a, dict) and a.get("filename")],
         "web_url": j.get("web_url"),
     }
+
+
+def bridge(b: Any) -> Dict[str, Any]:
+    """A trigger job together with the downstream pipeline it started."""
+    out = job(b)
+    down = b.get("downstream_pipeline") if isinstance(b, dict) else None
+    out["downstream_pipeline"] = (
+        {k: down.get(k) for k in ("id", "project_id", "status", "ref", "sha", "web_url")}
+        if isinstance(down, dict)
+        else None
+    )
+    return out
 
 
 def position(p: Any) -> Optional[Dict[str, Any]]:
