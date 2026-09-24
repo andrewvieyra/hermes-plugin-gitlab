@@ -21,8 +21,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Security
 - Redirects are never followed: a 3xx from GitLab is an error, so `PRIVATE-TOKEN` cannot be sent to another host.
-- Raw paths are rejected when a percent-decoded segment is `..`, and the deny-lists also match the path
-  with `..` resolved, in case a reverse proxy normalises it before GitLab.
+- Raw paths are rejected when a percent-decoded segment is `..` or the decoded path holds `?` or `#`
+  (`issues%3Fsudo%3Droot` would become a query string behind a decoding proxy), and the deny-lists also
+  match the path with `..` resolved, in case a reverse proxy normalises it before GitLab.
 - The `gitlab_api` deny-lists also match each path without a format suffix. GitLab routes `variables.json`
   (any single suffix, `%2Ejson` too) like `variables`, so a plain GET could read CI variables and, with
   `allow_raw_writes`, `PUT merge_requests/:iid/merge.json` could merge without `allow_merge`.

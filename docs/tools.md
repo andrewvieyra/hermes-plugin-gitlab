@@ -111,7 +111,8 @@ audited as `api.<METHOD>` and their results are returned as GitLab sent them (li
 Raw results are secret-redacted like every other read when `redact_secrets` is on (`redacted` counts the
 masks). A GET result larger than `max_file_bytes` is returned as clipped text with `truncated: true`;
 narrow it with `params`, page with `paginate` and `limit`, or use a typed tool. A path is rejected when
-any percent-decoded segment is `..`, and the deny-lists also match the path with `..` resolved.
+any percent-decoded segment is `..` or the decoded path holds a `?` or `#` (query strings belong in
+`params`), and the deny-lists also match the path with `..` resolved.
 Redirects are never followed: a 3xx from GitLab is reported as an error so the token is not sent to
 another host; set `GITLAB_URL` to the address GitLab redirects to. `sudo`, `private_token`,
 `access_token`, `oauth_token` and `job_token` are refused in `params` and `body` for every method: a

@@ -171,7 +171,9 @@ def validate_path(path: Any) -> str:
         if step == decoded:
             break
         decoded = step
-    if "\\" in decoded or any(segment in {"..", "."} for segment in decoded.split("/")):
+    # `%3F` and `%23` survive _PATH_RE; a proxy that decodes them would hand GitLab a query string or
+    # fragment the params check never saw
+    if any(c in decoded for c in "\\?#") or any(segment in {"..", "."} for segment in decoded.split("/")):
         raise GitLabError(f"invalid path {path!r}")
     if not _PATH_RE.match(clean):
         raise GitLabError(f"invalid path {path!r}")

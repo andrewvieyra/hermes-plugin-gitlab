@@ -305,6 +305,25 @@ class PathInjection(PluginTestCase):
         self.assertEqual(self.events("write_rejected")[0]["field"], "discussion_id")
 
 
+class EncodedQueryInPath(PluginTestCase):
+    def test_encoded_query_and_fragment_are_rejected(self):
+        # `?` and `=` are refused as given; encoded, they pass the character check and a decoding proxy
+        # would turn `issues%3Fsudo%3Droot` into a query string the params check never saw
+        before = len(self.gl.calls)
+        for path in (
+            "projects/1/issues%3Fsudo%3Droot",
+            "projects/1/issues%253Fsudo%253Droot",
+            "projects/1/issues%23frag",
+            "projects/1/issues%3fsudo%3droot",
+        ):
+            with self.assertRaises(client_mod.GitLabError, msg=path):
+                client_mod.validate_path(path)
+            out = self.call("gitlab_api", path=path)
+            self.assertFalse(out["success"], (path, out))
+        self.assertEqual(len(self.gl.calls), before)
+        self.assertEqual(client_mod.validate_path("projects/platform%2Fapi/issues"), "projects/platform%2Fapi/issues")
+
+
 class AuthOverride(PluginTestCase):
     def test_sudo_and_credential_parameters_are_refused(self):
         self.configure(allow_raw_writes=True)
