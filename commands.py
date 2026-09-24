@@ -8,7 +8,7 @@ import shlex
 from typing import Any, List
 
 from . import audit, handlers, render, timefmt
-from .store import get_store
+from .store import PREFIX, get_store
 
 _HELP = """\
 /gitlab — GitLab for Hermes
@@ -133,7 +133,7 @@ def run(argv: List[str], *, via: str = audit.VIA_SLASH) -> str:
         if not rest:
             return f"Usage: /gitlab {cmd} <id>"
         resolved = _resolve(rest[0])
-        if not str(resolved).startswith("glw-"):
+        if not str(resolved).startswith(f"{PREFIX}-"):
             return str(resolved)
         staged_id = str(resolved)
         if cmd == "show":
