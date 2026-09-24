@@ -162,9 +162,10 @@ against a strict alphabet (discussion ids), so no argument can add a path segmen
 
 Typed-only, non-GET: the writes a typed tool guards with a precondition or an extra flag are refused
 through `gitlab_api` and the refusal names the tool to use: `merge_requests/:iid/merge` and
-`.../approve` (`gitlab_mr_write`, head sha and `allow_merge`) and `repository/commits`
-(`gitlab_commit`, validated actions and `expected_head_sha`). Without this, `allow_raw_writes` alone
-would merge. `personal_access_tokens/self` is readable for `status` but cannot be revoked or rotated.
+`.../approve` (`gitlab_mr_write`, head sha and `allow_merge`), `repository/commits`
+(`gitlab_commit`, validated actions and `expected_head_sha`) and `repository/files/:path` for POST,
+PUT and DELETE (a one-file commit by another route). Without this, `allow_raw_writes` alone would
+merge. `personal_access_tokens/self` is readable for `status` but cannot be revoked or rotated.
 
 The lists are regular expressions in `executor.py`; a refusal names the surface. They are matched
 against every spelling GitLab could resolve the path to: as given, percent-decoded (repeatedly, for

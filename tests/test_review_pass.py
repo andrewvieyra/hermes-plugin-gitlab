@@ -465,6 +465,13 @@ class RawTypedOnly(PluginTestCase):
             ("PUT", "projects/platform%2Fapi/merge_requests/10/merge", None),
             ("POST", "projects/1/merge_requests/10/approve", {"sha": head}),
             ("POST", "projects/1/repository/commits", {"branch": "main", "commit_message": "x", "actions": []}),
+            (
+                "PUT",
+                "projects/1/repository/files/README%2Emd",
+                {"branch": "main", "content": "x", "commit_message": "x"},
+            ),
+            ("POST", "projects/1/repository/files/new.txt", {"branch": "main", "content": "x", "commit_message": "x"}),
+            ("DELETE", "projects/1/repository/files/old.txt", None),
             ("DELETE", "personal_access_tokens/self", None),
             ("POST", "personal_access_tokens/self/rotate", None),
         ):
@@ -479,6 +486,11 @@ class RawTypedOnly(PluginTestCase):
         self.assertIsNone(executor.raw_path_refusal("POST", "projects/1/merge_requests/10/unapprove"))
         self.assertIsNone(executor.raw_path_refusal("GET", "projects/1/merge_requests/10/merge_ref"))
         self.assertIsNone(executor.raw_path_refusal("GET", "projects/1/repository/commits"))
+        out = self.call("gitlab_api", method="PUT", path="projects/1/repository/files/README.md", body={"content": "x"})
+        self.assertIn("gitlab_commit", out["error"])
+        self.assertIsNone(executor.raw_path_refusal("GET", "projects/1/repository/files/README.md"))
+        self.assertIsNone(executor.raw_path_refusal("GET", "projects/1/repository/files/README.md/raw"))
+        self.assertIsNone(executor.raw_path_refusal("POST", "projects/1/repository/commits/abc123/cherry_pick"))
 
 
 class RegexGuard(unittest.TestCase):

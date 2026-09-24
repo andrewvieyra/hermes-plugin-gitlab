@@ -117,9 +117,9 @@ Redirects are never followed: a 3xx from GitLab is reported as an error so the t
 another host; set `GITLAB_URL` to the address GitLab redirects to. `sudo`, `private_token`,
 `access_token`, `oauth_token` and `job_token` are refused in `params` and `body` for every method: a
 call always runs as the configured token and user. Writes a typed tool guards are refused through the
-escape hatch: merging or approving a merge request and creating a commit must go through
-`gitlab_mr_write` / `gitlab_commit`, so `allow_raw_writes` cannot bypass `allow_merge` or the head-sha
-binding. Revoking or rotating the token in use (`personal_access_tokens/self`) is refused too.
+escape hatch: merging or approving a merge request and creating a commit (through `repository/commits`
+or a single file under `repository/files/:path`) must go through `gitlab_mr_write` / `gitlab_commit`, so
+`allow_raw_writes` cannot bypass `allow_merge` or the head-sha binding. Revoking or rotating the token in use (`personal_access_tokens/self`) is refused too.
 
 ## gitlab_issue_write
 

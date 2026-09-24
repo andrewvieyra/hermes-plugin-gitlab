@@ -112,6 +112,8 @@ _TYPED_ONLY = [
         "gitlab_mr_write, which binds the write to the reviewed head sha and honours allow_merge",
     ),
     (r"(^|/)repository/commits$", "gitlab_commit, which validates the actions and binds the commit to the branch head"),
+    # a one-file commit by another route: POST/PUT/DELETE on a file makes a commit without any of the above
+    (r"(^|/)repository/files/", "gitlab_commit, which validates the path and binds the commit to the branch head"),
 ]
 _SENSITIVE_RE = [re.compile(p) for p in _SENSITIVE]
 _ADMIN_RE = [re.compile(p) for p in _ADMIN]

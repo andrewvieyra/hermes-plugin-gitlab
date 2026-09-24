@@ -49,9 +49,9 @@ All notable changes to this project are documented here. The format follows
   or cubically (a repeated group containing a quantifier or an alternation, backreferences, counted repeats
   above 100, more than two unbounded quantifiers), searched within the first 500 characters of each line under
   a 2-second budget that is reported when it runs out; `/gitlab audit` lines cannot be broken by newlines.
-- Raw `gitlab_api` writes to `merge_requests/:iid/merge`, `.../approve` and `repository/commits` are refused
-  and point at the typed tool: `allow_raw_writes` alone could otherwise merge without `allow_merge` or a
-  head-sha check. `DELETE` / rotate on `personal_access_tokens/self` is refused.
+- Raw `gitlab_api` writes to `merge_requests/:iid/merge`, `.../approve`, `repository/commits` and
+  `repository/files/:path` (a one-file commit by another route) are refused and point at the typed tool:
+  `allow_raw_writes` alone could otherwise merge without `allow_merge` or commit without a head-sha check. `DELETE` / rotate on `personal_access_tokens/self` is refused.
 
 ### Fixed
 - Diff comments on renamed files send the file's real `old_path` instead of repeating `new_path`.

@@ -38,7 +38,7 @@ All paths are under `/api/v4`. The plugin speaks REST only: GraphQL (`/api/graph
 | `GET /projects/:id/repository/tags` | typed: `gitlab_repo` `tags` |
 | `POST` / `DELETE /projects/:id/repository/tags` | escape hatch |
 | `GET /projects/:id/repository/archive`, `contributors`, `merge_base` | escape hatch (GET; archives are clipped) |
-| `PUT /projects/:id/repository/files/:path` (single-file write) | escape hatch; prefer `gitlab_commit`, which binds to the head |
+| `POST` / `PUT` / `DELETE /projects/:id/repository/files/:path` (single-file commit) | typed: `gitlab_commit` with one action; refused through `gitlab_api` |
 | `protected_branches`, `protected_tags` | GET via escape hatch; changes refused |
 
 ## Issues
