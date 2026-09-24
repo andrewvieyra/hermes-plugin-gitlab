@@ -315,15 +315,20 @@ class AuthOverride(PluginTestCase):
             ("POST", {"body": {"name": "x", "sudo": 2}}),
             ("POST", {"params": {"access_token": "y"}, "body": {"name": "x"}}),
             ("POST", {"params": {"job_token": "y"}, "body": {"name": "x"}}),
+            # Rack parses `sudo[]=root` as sudo => ["root"], and GitLab's username lookup takes an array
+            ("GET", {"params": {"sudo[]": "root"}}),
+            ("POST", {"params": {"sudo[x]": "root"}, "body": {"name": "x"}}),
+            ("POST", {"body": {"name": "x", " SUDO []": 2}}),
         ):
             out = self.call("gitlab_api", method=method, path="projects/1/labels", **extra)
             self.assertTrue(out.get("refused") or out.get("rejected"), (method, extra, out))
             self.assertIn("configured token", out["error"])
         self.assertEqual(len(self.gl.calls), before)
-        self.assertGreaterEqual(len(self.events("write_refused")) + len(self.events("write_rejected")), 5)
+        self.assertGreaterEqual(len(self.events("write_refused")) + len(self.events("write_rejected")), 8)
         # the gate re-checks a staged raw request, so a tampered document cannot smuggle one in either
         self.assertIsNotNone(executor.auth_override(None, {"Sudo": 1}))
-        self.assertIsNone(executor.auth_override({"search": "x"}, {"name": "y"}))
+        self.assertIsNotNone(executor.auth_override({"sudo[]": "root"}, None))
+        self.assertIsNone(executor.auth_override({"search": "x", "labels[]": "bug"}, {"name": "y"}))
 
     def test_gate_revalidates_a_staged_raw_path(self):
         # a staged file edited on disk cannot smuggle in a path the builder would have rejected

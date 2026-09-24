@@ -154,8 +154,9 @@ never saw), `groups/:id/projects/:id` (transfer), `namespaces`, `topics`, `appli
 
 Authentication parameters are refused for every raw call, GET included: `sudo` (impersonation with
 an admin token) and `private_token`, `access_token`, `oauth_token`, `job_token` (a credential the
-model supplies) in `params` or `body`. The typed tools only forward whitelisted keys, so the same
-override cannot be smuggled through them. Every model-supplied value that reaches a URL is either
+model supplies) in `params` or `body`, in any case and with any bracket suffix (Rack folds `sudo[]`
+and `sudo[x]` into `sudo`, and GitLab's user lookup accepts the array). The typed tools only forward
+whitelisted keys, so the same override cannot be smuggled through them. Every model-supplied value that reaches a URL is either
 percent-encoded (project paths, branch and file names, shas), an integer (iids, ids) or validated
 against a strict alphabet (discussion ids), so no argument can add a path segment or a query string.
 

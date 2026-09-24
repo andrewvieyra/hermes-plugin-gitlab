@@ -35,7 +35,8 @@ All notable changes to this project are documented here. The format follows
 - `discussion_id` is validated (letters and digits only) before it is interpolated into a URL: with a
   normalising reverse proxy, `../merge?sha=…` on `resolve` could otherwise have merged without `allow_merge`.
 - `sudo`, `private_token`, `access_token`, `oauth_token` and `job_token` are refused in raw params and bodies,
-  so a call always runs as the configured token and user.
+  in any case and with any bracket suffix (`sudo[]`, which Rack folds into `sudo`), so a call always runs as
+  the configured token and user.
 - More refused surfaces: `trigger`, single `pipeline_schedules/:id` (lists its variables), error-tracking
   `client_keys`, project and group `audit_events` for every method; `fork`, issue `move`/`clone`,
   `access_requests`, `invitations`, `billable_members`, `job_token_scope`, `pages`, `protect`/`unprotect`,

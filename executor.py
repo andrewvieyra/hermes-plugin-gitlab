@@ -131,7 +131,9 @@ def auth_override(params: Any, body: Any) -> Optional[str]:
     for source, name in ((params, "params"), (body, "body")):
         if isinstance(source, dict):
             for key in source:
-                if str(key).strip().lower() in _AUTH_PARAMS:
+                # Rack folds `sudo[]` and `sudo[x]` into `sudo` (an array or a hash, which GitLab's user
+                # lookup accepts), so the name before any bracket is what counts.
+                if str(key).strip().lower().split("[", 1)[0].strip() in _AUTH_PARAMS:
                     return f"gitlab_api refused: {name}.{key} would change who the call runs as; it must run as the configured token and user"
     return None
 
