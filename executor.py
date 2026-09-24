@@ -116,6 +116,9 @@ _TYPED_ONLY = [
 _SENSITIVE_RE = [re.compile(p) for p in _SENSITIVE]
 _ADMIN_RE = [re.compile(p) for p in _ADMIN]
 _TYPED_ONLY_RE = [(re.compile(p), hint) for p, hint in _TYPED_ONLY]
+# GitLab's API routes accept one format suffix on the last segment and ignore it: `variables.json`,
+# `variables.txt` and `merge.foo` reach `variables` and `merge`. Two suffixes or a bare dot do not route.
+_FORMAT_SUFFIX_RE = re.compile(r"(?<=[^/.])\.[^/.]+$")
 # Query or body keys that change who a call runs as. ``sudo`` impersonates another user with an admin
 # token; the others would swap the credential for one the model supplies.
 _AUTH_PARAMS = {"sudo", "private_token", "access_token", "oauth_token", "job_token"}
@@ -136,18 +139,20 @@ def auth_override(params: Any, body: Any) -> Optional[str]:
 def path_forms(path: str) -> List[str]:
     """Every spelling GitLab may resolve *path* to: as given, percent-decoded (repeatedly, for double
     encoding), lower-cased, with duplicate slashes collapsed and ``..`` segments resolved (a reverse
-    proxy may do that before GitLab sees the path). The deny-lists match all of them, so
-    ``projects/1/%76ariables``, ``PROJECTS/1//VARIABLES`` or ``projects/1/%2e%2e/%2e%2e/admin`` cannot
-    slip past. The encoded form is kept too, so ``projects/group%2Fproj`` still matches the
-    project-level rules."""
+    proxy may do that before GitLab sees the path), each with and without a format suffix on the last
+    segment (GitLab routes ``variables.json`` like ``variables``). The deny-lists match all of them, so
+    ``projects/1/%76ariables``, ``PROJECTS/1//VARIABLES``, ``projects/1/variables.json`` or
+    ``projects/1/%2e%2e/%2e%2e/admin`` cannot slip past. The encoded form is kept too, so
+    ``projects/group%2Fproj`` still matches the project-level rules."""
     forms: List[str] = []
     current = path
     for _ in range(3):
         for form in (current, current.lower()):
             form = re.sub(r"/{2,}", "/", form).strip("/")
             for candidate in (form, posixpath.normpath(form) if form else form):
-                if candidate and candidate not in forms:
-                    forms.append(candidate)
+                for spelling in (candidate, _FORMAT_SUFFIX_RE.sub("", candidate)):
+                    if spelling and spelling not in forms:
+                        forms.append(spelling)
         decoded = unquote(current)
         if decoded == current:
             break

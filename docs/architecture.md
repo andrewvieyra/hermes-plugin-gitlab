@@ -167,9 +167,12 @@ would merge. `personal_access_tokens/self` is readable for `status` but cannot b
 
 The lists are regular expressions in `executor.py`; a refusal names the surface. They are matched
 against every spelling GitLab could resolve the path to: as given, percent-decoded (repeatedly, for
-double encoding), lower-cased, with duplicate slashes collapsed. The encoded form stays in the set so
-`projects/group%2Fproj` still matches the project-level rules. A project literally named `hooks` or
-`variables` is therefore unreachable through the raw tool; the typed tools are unaffected.
+double encoding), lower-cased, with duplicate slashes collapsed and `..` resolved, each with and
+without a format suffix on the last segment (GitLab's routes accept one and ignore it, so
+`variables.json`, `variables.txt` and `variables%2Ejson` all reach `variables`). The encoded form
+stays in the set so `projects/group%2Fproj` still matches the project-level rules. A project
+literally named `hooks` or `variables`, or a raw read of a file called `variables.yml`, is therefore
+unreachable through the raw tool; the typed tools are unaffected.
 
 ## Hermes integration
 

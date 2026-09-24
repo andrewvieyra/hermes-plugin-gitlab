@@ -102,7 +102,8 @@ expiry (when the instance supports `personal_access_tokens/self`), the plugin ve
 settings, and warnings (read-only token with writes enabled, expiring or revoked token, admin token).
 
 GET refuses the sensitive surfaces listed in [architecture.md](architecture.md); paths are matched
-after percent-decoding and lower-casing, so encoded or upper-case spellings are refused too. Non-GET requires
+after percent-decoding and lower-casing and without a format suffix, so encoded, upper-case or
+`.json` spellings are refused too. Non-GET requires
 `allow_raw_writes` (`allow_raw_delete` too for DELETE), passes the write gate (mode, `write_projects`
 when the path is under `projects/:id/`), and refuses administrative surfaces. Non-GET calls are
 audited as `api.<METHOD>` and their results are returned as GitLab sent them (lists cut at 50).

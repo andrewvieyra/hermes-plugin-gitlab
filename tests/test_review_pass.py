@@ -496,5 +496,42 @@ class RegexGuardHandler(PluginTestCase):
         self.assertTrue(out["success"], out)
 
 
+class FormatSuffix(PluginTestCase):
+    """GitLab routes a path with one format suffix (``variables.json``, ``.txt``, ``%2Ejson``) like the path
+    without it, so the deny-lists must not be anchored on the literal last segment."""
+
+    def test_deny_lists_match_paths_with_a_format_suffix(self):
+        for path in (
+            "projects/1/variables.json",
+            "projects/1/VARIABLES.JSON",
+            "projects/1/variables%2Ejson",
+            "groups/2/variables.txt",
+            "projects/1/hooks.foo",
+            "projects/1/pipeline_schedules/5.json",
+        ):
+            self.assertTrue(self.call("gitlab_api", path=path).get("refused"), path)
+        self.configure(allow_raw_writes=True, allow_raw_delete=True, allow_merge=True)
+        head = self.gl.mrs[1][10]["sha"]
+        before = len(self.gl.writes())
+        for method, path, body in (
+            ("PUT", "projects/1/merge_requests/10/merge.json", {"sha": head}),
+            ("POST", "projects/1/merge_requests/10/approve.json", None),
+            ("POST", "projects/1/repository/commits.json", {"branch": "main", "commit_message": "x", "actions": []}),
+            ("POST", "projects/1/members.json", {"user_id": 2, "access_level": 50}),
+            ("POST", "projects/1/protected_branches.json", {"name": "main"}),
+            ("POST", "projects/1/fork.json", {"namespace_path": "elsewhere"}),
+            ("DELETE", "personal_access_tokens/self.json", None),
+        ):
+            out = self.call("gitlab_api", method=method, path=path, body=body)
+            self.assertTrue(out.get("refused"), (method, path, out))
+        self.assertEqual(len(self.gl.writes()), before)
+        self.assertEqual(self.gl.mrs[1][10]["state"], "opened")
+        self.assertIn("projects/1/variables", executor.path_forms("projects/1/variables%2Ejson"))
+        # the suffix is only dropped for matching: ordinary paths with one still go through
+        self.assertIsNone(executor.raw_path_refusal("GET", "projects/1/issues.json"))
+        self.assertIsNone(executor.raw_path_refusal("GET", "projects/1/repository/files/README.md"))
+        self.assertIsNone(executor.raw_path_refusal("POST", "projects/1/labels.json"))
+
+
 if __name__ == "__main__":
     unittest.main()
