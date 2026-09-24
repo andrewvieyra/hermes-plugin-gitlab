@@ -6,6 +6,37 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-24
+
+Documentation and tests catch up with the code: the skill's tool table, `SECURITY.md`, the README, an
+example and the audit docs are corrected or completed, and the tests are reorganised with wider
+coverage. No tool's arguments, results or behaviour change. There were no 0.3 or 0.4 releases.
+
+### Added
+- `docs/audit.md` describes the staged-write file (requester, environment, run record, lifecycle) and
+  lists every action and target shape the plugin records; `docs/architecture.md` gains an Audit section
+  and its staged-file example shows every `audit` key.
+
+### Changed
+- Tests are organised by module, with new or wider coverage for the syslog message shape, CEF escaping,
+  sink validation and delivery (every `audit.jsonl` record reaches the wire; an unreachable collector is
+  retried, then dropped), local-time rendering, staged-id exhaustion, request-text redaction with
+  `redact_secrets` on and off, and the `check_fn`s in `full`, `read_only` and unconfigured states.
+
+### Fixed
+- The tool table in `SKILL.md`, which the model reads, lagged the schemas: `gitlab_mr_write` lacked
+  `unapprove` and internal notes, and `gitlab_issue_write` lacked thread replies and internal notes. A
+  test now checks that the table names every tool and every write action the schemas offer.
+- `SECURITY.md` no longer says raw `gitlab_api` results are left unredacted; they have been redacted
+  since 0.2.0.
+- README: the "How it works" diagram is redrawn (its brace closed twice), the read-only tool count no
+  longer counts `gitlab_api` twice, `examples/` is linked, the staged-write location and the
+  no-writes-when-unattended rule are stated, the staged file's `audit` fields include `pid` and the
+  Hermes home, and `gitlab_mr_write` lists internal notes.
+- `examples/commit-and-mr.json` no longer dry-runs the commit whose branch the next step opens an MR from.
+- `docs/tools.md`: the `branches` and `tags` rows had been cut off from the `gitlab_repo` table and
+  rendered as plain text.
+
 ## [0.2.0] - 2026-09-24
 
 Two review passes over 0.1.0: the escape hatch is harder to steer, more of what the model sees is

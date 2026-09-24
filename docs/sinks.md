@@ -81,7 +81,7 @@ With `format: cef` the body is one Common Event Format line, which ArcSight, Spl
 Sentinel, Graylog and Wazuh parse natively:
 
 ```
-CEF:0|andrewvieyra|hermes-plugin-gitlab|0.2.0|write_refused|write refused|7|rt=1757446550000 dvchost=hermes-01 dvcpid=4242 request=https://gitlab.example.com suser=Andrew cs1Label=staged_id cs2Label=actor_kind cs2=model cs3Label=via cs3=tool cs4Label=platform cs4=signal cs5Label=chat cs5=Andrew cs6Label=project cs6=platform/api act=mr.merge externalId=42 cs7Label=web_url cs7=https://… msg=mr.merge refused: allow_merge is off…
+CEF:0|andrewvieyra|hermes-plugin-gitlab|0.5.0|write_refused|write refused|7|rt=1757446550000 dvchost=hermes-01 dvcpid=4242 request=https://gitlab.example.com suser=Andrew cs1Label=staged_id cs2Label=actor_kind cs2=model cs3Label=via cs3=tool cs4Label=platform cs4=signal cs5Label=chat cs5=Andrew cs6Label=project cs6=platform/api act=mr.merge externalId=42 cs7Label=web_url cs7=https://… msg=mr.merge refused: allow_merge is off…
 ```
 
 | CEF key | Source |

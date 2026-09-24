@@ -1,5 +1,5 @@
 name: gitlab
-version: 0.2.0
+version: 0.5.0
 manifest_version: 2
 api_version: 1
 description: "GitLab (self-managed or GitLab.com) for Hermes: read repositories, issues, merge requests and CI with typed tools; every write goes through one gate with preview, project allow-list, head-sha preconditions, operator staging and an audit trail."
