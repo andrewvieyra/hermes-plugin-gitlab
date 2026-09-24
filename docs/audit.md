@@ -51,11 +51,11 @@ shape is in [architecture.md](architecture.md#staging)). Besides the request its
 |---|---|
 | `requested_by`, `requested_by_text` | The actor record of the model call that staged it, and its one-line rendering |
 | `audit` | Where it was staged: `host`, `os_user`, `pid`, `plugin_version`, `hermes_version`, `hermes_home` |
-| `run` | Filled in by `/gitlab run`: `started_at`, `finished_at`, the operator's `actor`, `outcome`, `report` and the `request` made (`method`, `path`, `status`) |
+| `run` | Filled in by `/gitlab run` or `/gitlab drop`: `started_at`, `finished_at`, the operator's `actor`, `outcome`, `report`, `error` and `result` when there is one, and the `request` made (`method`, `path`, `status`) |
 | `status`, `expires_at`, `updated_at` | Lifecycle: `staged`, `running`, `done`, `failed`, `conflict`, `refused`, `dropped` or `expired` |
 
 Files are created `0600`, and a run claims the file under a cross-process lock, so two operators
-cannot run the same write. The same facts reach the event stream as `write_staged` and `staged_run`,
+cannot run the same write. The request, actor and outcome reach the event stream as `write_staged` and `staged_run`,
 so a SIEM needs only the stream; the files are for operators (`/gitlab pending`, `/gitlab show <id>`).
 
 ## Events
@@ -71,14 +71,14 @@ One JSON object per line. Common fields on every event:
 | `gitlab_url` | The GitLab instance |
 | `action` | What was attempted: `issue.create`, `issue.update`, `issue.comment`, `mr.create`, `mr.update`, `mr.comment`, `mr.approve`, `mr.unapprove`, `mr.merge`, `mr.rebase`, `mr.resolve`, `mr.cancel_auto_merge`, `pipeline.run`, `pipeline.retry`, `pipeline.cancel`, `pipeline.play`, `commit.create`, `branch.create`, `api.POST` / `api.PUT` / `api.PATCH` / `api.DELETE` / `api.GET`; for reads `<tool>.<action>` such as `repo.file` |
 | `project` | Project id or path as given |
-| `target` | What was touched: `{"kind": "issue" or "merge_request", "iid": 42, "web_url": …}` (plus `discussion_id` for replies and resolves), `{"kind": "pipeline", "id": …}` (or `"ref"` for a run), `{"kind": "job", "id": …}`, `{"kind": "branch", "branch": …, "ref": …}`, `{"kind": "commit", "branch": …}`, `{"kind": "raw", "path": …}`, or `null` |
+| `target` | What was touched: `{"kind": "issue" or "merge_request", "iid": 42, "web_url": …}` (plus `discussion_id` for replies and resolves, and `sha` for merge, diff comments and an approve given a `sha`; a create records only `kind`, and the new object's ids are in `result`), `{"kind": "pipeline", "id": …}` (or `"ref"` for a run), `{"kind": "job", "id": …}`, `{"kind": "branch", "branch": …, "ref": …}`, `{"kind": "commit", "branch": …}`, `{"kind": "raw", "path": …}`, or `null` |
 | `staged_id` | The staged write this event belongs to, or `null` |
 | `actor` | The actor record |
 | `host`, `pid` | Where the event was produced |
 
 | Event | When | Extra fields |
 |---|---|---|
-| `write_rejected` | Arguments could not be turned into a request, or a lookup failed; nothing sent | `error`, `field`, `http_status` |
+| `write_rejected` | Arguments could not be turned into a request, or a lookup failed; nothing sent. `action` is the tool's prefix plus the `action` argument as given (`issue.bogus`), or `commit.create` for `gitlab_commit` | `error`, `field`, `http_status` |
 | `write_refused` | The gate stopped it: mode, missing flag, deny-list, allow-list, unknown or stale staged id, or `operator_only` without a store | `reason`, `dry_run`, `write_mode` |
 | `write_previewed` | `dry_run` returned the payload | `summary`, `method`, `path` |
 | `write_staged` | `operator_only`: the request was stored for a human | `summary`, `expires_at` |

@@ -132,7 +132,7 @@ Environment variables:
 | `gitlab_pipelines` | no | Pipelines, one pipeline with jobs, failures and downstream pipelines, jobs by status, a job's log (tail or regex search, colour and sections stripped) |
 | `gitlab_api` | GET, or gated | Any other endpoint; `path: status` for connectivity, token scopes and write mode |
 | `gitlab_issue_write` | yes | Create, edit, close/reopen, comment, reply, internal notes |
-| `gitlab_mr_write` | yes | Create, edit, comment (general, reply, on a diff line), approve, unapprove, merge, cancel auto-merge, rebase, resolve |
+| `gitlab_mr_write` | yes | Create, edit, comment (general, reply, on a diff line, internal note), approve, unapprove, merge, cancel auto-merge, rebase, resolve |
 | `gitlab_pipeline_write` | yes | Run with variables and inputs, retry, cancel, play a manual job |
 | `gitlab_commit` | yes | One atomic commit of create/update/delete/move/chmod actions, creating the branch first if needed, or just the branch |
 
