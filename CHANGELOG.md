@@ -97,15 +97,17 @@ arguments or results in a way that needs a prompt change.
 - Bundled `gitlab:workflow` skill.
 - Test suite with an in-memory fake GitLab and a loader test through Hermes' `PluginManager`.
 
-### Review pass before release
+### Security
+- `gitlab_api` deny-lists match percent-decoded and lower-cased paths, closing an encoding bypass.
+- Secret redaction also covers issue and MR descriptions, comments, commit messages and titles.
+- Operator reads through `/gitlab` and the CLI are audited as operator; raw writes no longer emit a read event.
+
+### Fixed
 - Diff-comment positions are resolved against the merge request diff: unchanged lines get both line numbers, as
   GitLab requires, and lines outside the diff are rejected before anything is sent.
-- `gitlab_api` deny-lists match percent-decoded and lower-cased paths, closing an encoding bypass.
 - Issues `assignee: None` / `Any` use `assignee_id`; pipelines `list` no longer forwards the job `scope` filter.
 - `discussions` scans every page and counts unresolved threads over all of them.
 - File line ranges are taken from the whole file before the byte cap, and invalid ranges are errors.
 - Diff rendering skips a file that does not fit and keeps later files that do.
 - Empty-string booleans mean "not given" and junk booleans are rejected; `audit_log_path` keeps its case.
-- Operator reads through `/gitlab` and the CLI are audited as operator; raw writes no longer emit a read event.
 - An interrupted staged run is finalised as `failed` and a `running` document can be dropped.
-- Secret redaction also covers issue and MR descriptions, comments, commit messages and titles.
