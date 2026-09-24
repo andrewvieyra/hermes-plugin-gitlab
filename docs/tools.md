@@ -39,12 +39,12 @@ the instance refuses the scope. Code snippets are redacted for token formats.
 | `commits` | `ref`, `path`, `since`, `until`, `author`, `all`, `first_parent` | commits (no `count`: GitLab omits `x-total` here) |
 | `commit` | `sha` (required), `include_diff` (default true), `paths`, `max_bytes` | `commit` with stats, `diff` text, `diff_summary` |
 | `compare` | `from`, `to` (required), `straight`, `paths`, `max_bytes` | `commits`, `diff`, `diff_summary`, `compare_timeout` |
+| `branches` | `search`, or `name` for one branch | branches with head commit; `branch` for one |
+| `tags` | `search`, `order_by`, `sort` | tags |
 
 Every diff-returning action (`commit`, `compare`, and `gitlab_merge_requests` `diffs`) has the same
 shape: `diff` is the text and `diff_summary` holds `files` (path, status, additions, deletions),
 `total_files`, `shown_files`, `truncated`, `omitted`, `redacted` and `bytes`.
-| `branches` | `search`, or `name` for one branch | branches with head commit; `branch` for one |
-| `tags` | `search`, `order_by`, `sort` | tags |
 
 Diffs are unified with `diff --git` headers, capped at `max_bytes` (never above `max_diff_bytes`).
 A file that does not fit is skipped and later, smaller files still get their turn; `omitted` names
@@ -103,23 +103,25 @@ settings, and warnings (read-only token with writes enabled, expiring or revoked
 
 GET refuses the sensitive surfaces listed in [architecture.md](architecture.md); paths are matched
 after percent-decoding and lower-casing and without a format suffix, so encoded, upper-case or
-`.json` spellings are refused too. Non-GET requires
-`allow_raw_writes` (`allow_raw_delete` too for DELETE), passes the write gate (mode, `write_projects`
-when the path is under `projects/:id/`), and refuses administrative surfaces. Non-GET calls are
-audited as `api.<METHOD>` and their results are returned as GitLab sent them (lists cut at 50).
+`.json` spellings are refused too. Non-GET requires `allow_raw_writes` (`allow_raw_delete` too for
+DELETE), passes the write gate (mode, `write_projects` when the path is under `projects/:id/`), and
+refuses administrative surfaces. Non-GET calls are audited as `api.<METHOD>` and their results are
+returned as GitLab sent them (lists cut at 50).
 
-Raw results are secret-redacted like every other read when `redact_secrets` is on (`redacted` counts the
-masks). A GET result larger than `max_file_bytes` is returned as clipped text with `truncated: true`;
-narrow it with `params`, page with `paginate` and `limit`, or use a typed tool. A path is rejected when
-any percent-decoded segment is `..` or the decoded path holds a `?` or `#` (query strings belong in
-`params`), and the deny-lists also match the path with `..` resolved.
+Raw results are secret-redacted like every other read when `redact_secrets` is on (`redacted` counts
+the masks). A GET result larger than `max_file_bytes` is returned as clipped text with
+`truncated: true`; narrow it with `params`, page with `paginate` and `limit`, or use a typed tool. A
+path is rejected when any percent-decoded segment is `..` or the decoded path holds a `?` or `#`
+(query strings belong in `params`), and the deny-lists also match the path with `..` resolved.
 Redirects are never followed: a 3xx from GitLab is reported as an error so the token is not sent to
 another host; set `GITLAB_URL` to the address GitLab redirects to. `sudo`, `private_token`,
 `access_token`, `oauth_token` and `job_token` are refused in `params` and `body` for every method: a
 call always runs as the configured token and user. Writes a typed tool guards are refused through the
-escape hatch: merging or approving a merge request and creating a commit (through `repository/commits`
-or a single file under `repository/files/:path`) must go through `gitlab_mr_write` / `gitlab_commit`, so
-`allow_raw_writes` cannot bypass `allow_merge` or the head-sha binding. Revoking or rotating the token in use (`personal_access_tokens/self`) is refused too.
+escape hatch: merging or approving a merge request and creating a commit (through
+`repository/commits` or a single file under `repository/files/:path`) must go through
+`gitlab_mr_write` / `gitlab_commit`, so `allow_raw_writes` cannot bypass `allow_merge` or the
+head-sha binding. Revoking or rotating the token in use (`personal_access_tokens/self`) is refused
+too.
 
 ## gitlab_issue_write
 
@@ -183,12 +185,12 @@ Needs `api` and push rights on `branch` (protected branches refuse per GitLab's 
 | `author_name`, `author_email` | optional |
 | `expected_head_sha` | head of `branch` (or of `start_branch` for a new branch) as last read; a moved head stops the commit |
 
-`dry_run` previews clip each file's `content` to its first 200 characters; the full content is what is sent
-(and, in `operator_only` mode, what is staged).
+`dry_run` previews clip each file's `content` to its first 200 characters; the full content is what
+is sent (and, in `operator_only` mode, what is staged).
 
 Result: the commit (`id`, `short_id`, `title`, `stats`, `web_url`), or the branch for a branch-only
-call. GitLab rejects `create` on an
-existing path and `update`/`delete`/`move` on a missing one with a 400 that the tool reports verbatim.
+call. GitLab rejects `create` on an existing path and `update`/`delete`/`move` on a missing one with
+a 400 that the tool reports verbatim.
 
 ## Common result fields
 

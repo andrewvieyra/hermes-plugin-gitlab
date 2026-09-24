@@ -32,7 +32,7 @@ always present; unknown values are `null` so field mappings stay stable.
 | `source` | Hermes session source (`gateway`, `cli`, `tui`, `desktop`, `api_server`, …) |
 | `profile` | Hermes profile, when multiplexing |
 | `chat_id`, `chat_name`, `chat_type`, `thread_id`, `scope_id` | Where the conversation happened; `chat_type` is `dm`, `group`, `channel` or `thread` |
-| `user_id`, `user_id_alt`, `user_name` | The platform user who sent the message |
+| `user_id`, `user_id_alt`, `user_name` | The platform user who sent the message (`user_id_alt` is the platform's stable alternate id, such as a Signal UUID) |
 | `message_id` | The triggering message, where the platform exposes one |
 | `session_key`, `session_id`, `task_id` | Hermes session identifiers, for joining with Hermes' own logs |
 | `cron` | `true` when the turn ran inside a Hermes cron job |
@@ -41,6 +41,22 @@ always present; unknown values are `null` so field mappings stay stable.
 
 Identity comes from Hermes' per-session context, which the gateway binds for every turn. In a plain
 CLI session most platform fields are `null` and `os_user` is the meaningful identity.
+
+## The staged write file
+
+In `operator_only` mode every model write is a JSON document under the staged directory (the full
+shape is in [architecture.md](architecture.md#staging)). Besides the request itself it records:
+
+| Field | Meaning |
+|---|---|
+| `requested_by`, `requested_by_text` | The actor record of the model call that staged it, and its one-line rendering |
+| `audit` | Where it was staged: `host`, `os_user`, `pid`, `plugin_version`, `hermes_version`, `hermes_home` |
+| `run` | Filled in by `/gitlab run`: `started_at`, `finished_at`, the operator's `actor`, `outcome`, `report` and the `request` made (`method`, `path`, `status`) |
+| `status`, `expires_at`, `updated_at` | Lifecycle: `staged`, `running`, `done`, `failed`, `conflict`, `refused`, `dropped` or `expired` |
+
+Files are created `0600`, and a run claims the file under a cross-process lock, so two operators
+cannot run the same write. The same facts reach the event stream as `write_staged` and `staged_run`,
+so a SIEM needs only the stream; the files are for operators (`/gitlab pending`, `/gitlab show <id>`).
 
 ## Events
 
@@ -53,9 +69,9 @@ One JSON object per line. Common fields on every event:
 | `plugin` | `gitlab` |
 | `event` | Event name, below |
 | `gitlab_url` | The GitLab instance |
-| `action` | What was attempted: `issue.create`, `issue.update`, `issue.comment`, `mr.create`, `mr.update`, `mr.comment`, `mr.approve`, `mr.unapprove`, `mr.merge`, `mr.rebase`, `mr.resolve`, `pipeline.run`, `pipeline.retry`, `pipeline.cancel`, `pipeline.play`, `commit.create`, `api.POST` / `api.PUT` / `api.PATCH` / `api.DELETE` / `api.GET`; for reads `<tool>.<action>` such as `repo.file` |
+| `action` | What was attempted: `issue.create`, `issue.update`, `issue.comment`, `mr.create`, `mr.update`, `mr.comment`, `mr.approve`, `mr.unapprove`, `mr.merge`, `mr.rebase`, `mr.resolve`, `mr.cancel_auto_merge`, `pipeline.run`, `pipeline.retry`, `pipeline.cancel`, `pipeline.play`, `commit.create`, `branch.create`, `api.POST` / `api.PUT` / `api.PATCH` / `api.DELETE` / `api.GET`; for reads `<tool>.<action>` such as `repo.file` |
 | `project` | Project id or path as given |
-| `target` | `{"kind": "merge_request", "iid": 42, "web_url": ...}`, `{"kind": "commit", "branch": ...}`, `{"kind": "raw", "path": ...}`, or `null` |
+| `target` | What was touched: `{"kind": "issue" or "merge_request", "iid": 42, "web_url": …}` (plus `discussion_id` for replies and resolves), `{"kind": "pipeline", "id": …}` (or `"ref"` for a run), `{"kind": "job", "id": …}`, `{"kind": "branch", "branch": …, "ref": …}`, `{"kind": "commit", "branch": …}`, `{"kind": "raw", "path": …}`, or `null` |
 | `staged_id` | The staged write this event belongs to, or `null` |
 | `actor` | The actor record |
 | `host`, `pid` | Where the event was produced |

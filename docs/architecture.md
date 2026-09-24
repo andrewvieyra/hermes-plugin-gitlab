@@ -116,7 +116,7 @@ In `operator_only` mode a model-initiated request that passes the gate is stored
   "request": { /* WriteRequest.to_dict() */ },
   "requested_by": { /* actor */ },
   "requested_by_text": "model via tool on signal for Andrew in dm Andrew",
-  "audit": { "host": "hermes-01", "os_user": "hermes", "plugin_version": "0.2.0", "hermes_version": "0.21.0" },
+  "audit": { "host": "hermes-01", "os_user": "hermes", "pid": 41233, "plugin_version": "0.2.0", "hermes_version": "0.21.0", "hermes_home": "/home/hermes/.hermes" },
   "run": { "started_at": "...", "finished_at": "...", "actor": { /* operator */ }, "outcome": "done", "report": "...", "request": {"method": "PUT", "path": "...", "status": 200} }
 }
 ```
@@ -156,9 +156,10 @@ Authentication parameters are refused for every raw call, GET included: `sudo` (
 an admin token) and `private_token`, `access_token`, `oauth_token`, `job_token` (a credential the
 model supplies) in `params` or `body`, in any case and with any bracket suffix (Rack folds `sudo[]`
 and `sudo[x]` into `sudo`, and GitLab's user lookup accepts the array). The typed tools only forward
-whitelisted keys, so the same override cannot be smuggled through them. Every model-supplied value that reaches a URL is either
-percent-encoded (project paths, branch and file names, shas), an integer (iids, ids) or validated
-against a strict alphabet (discussion ids), so no argument can add a path segment or a query string.
+whitelisted keys, so the same override cannot be smuggled through them. Every model-supplied value
+that reaches a URL is either percent-encoded (project paths, branch and file names, shas), an integer
+(iids, ids) or validated against a strict alphabet (discussion ids), so no argument can add a path
+segment or a query string.
 
 Typed-only, non-GET: the writes a typed tool guards with a precondition or an extra flag are refused
 through `gitlab_api` and the refusal names the tool to use: `merge_requests/:iid/merge` and
@@ -187,6 +188,15 @@ unreachable through the raw tool; the typed tools are unaffected.
   `session_id` and `user_task` kwargs Hermes passes feed the actor record.
 - The staged store uses `plugins.plugin_storage.plugin_data_dir` when available so files follow the
   active Hermes profile, with a plain `$HERMES_HOME/plugin-data/gitlab` fallback.
+
+## Audit
+
+Actor records, the staged-write file and the event stream are described in [audit.md](audit.md).
+The executor emits an event at every step that changes state or stops a write (gate refusal,
+preview, staging, precondition conflict, HTTP outcome, staged run, drop, prune), and the read handlers
+emit one per call when `audit_reads` is on. A failed audit write (unwritable path, full disk) is
+logged and never fails the GitLab operation; sinks are fed from the same records on a background
+thread and are dropped, not retried forever, when a collector is down.
 
 ## Non-goals
 
