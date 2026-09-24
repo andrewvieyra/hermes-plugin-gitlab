@@ -34,14 +34,14 @@ MCP server, VM or container.
 ## How it works
 
 ```
- read tools (6)                         write tools (4)                      operator
- ──────────────                         ───────────────                      ────────
- gitlab_search                          gitlab_issue_write ─┐
- gitlab_repo                            gitlab_mr_write     ├─► WriteRequest ─► gate ─► preview (dry_run)
- gitlab_issues                          gitlab_pipeline_write│    method, path,     │     stage  (operator_only) ─► /gitlab run <id>
- gitlab_merge_requests                  gitlab_commit       ─┘    payload,          │     check preconditions (head sha)
- gitlab_pipelines                       gitlab_api (POST/PUT/  ─┘  preconditions,    └───► execute ─► audit.jsonl (+ syslog / HEC)
- gitlab_api (GET)                                 PATCH/DELETE)   required flags
+ read tools (6)          write tools (4) + gitlab_api                       operator
+ ──────────────          ────────────────────────────                       ────────
+ gitlab_search           gitlab_issue_write    ─┐
+ gitlab_repo             gitlab_mr_write        ├─► WriteRequest ─► gate ─► preview (dry_run)
+ gitlab_issues           gitlab_pipeline_write  │    method, path,  │      stage (operator_only) ─► /gitlab run <id>
+ gitlab_merge_requests   gitlab_commit          │    payload,       │      check preconditions (head sha)
+ gitlab_pipelines        gitlab_api (POST/PUT/  │    preconditions, └─────► execute ─► audit.jsonl (+ syslog / HEC)
+ gitlab_api (GET)                PATCH/DELETE) ─┘    required flags
 ```
 
 Reads summarise GitLab's verbose objects and cap diffs, files and logs so results fit the model's
@@ -139,13 +139,16 @@ Environment variables:
 Every write tool accepts `dry_run: true` and returns the exact method, path, payload, preconditions
 and required flags without sending anything. Full parameter reference: [docs/tools.md](docs/tools.md);
 endpoint-by-endpoint coverage of the GitLab REST API: [docs/api-coverage.md](docs/api-coverage.md).
+Worked tool calls for a review, a CI diagnosis, a commit plus MR, an issue triage and operator
+staging are in [examples/](examples/).
 
 `project` accepts a numeric id, a `group/project` path, or a GitLab URL of the project or of one of
 its issues, merge requests, pipelines or commits, so "review this: https://gitlab…/-/merge_requests/42"
 needs no lookup.
 
 The bundled skill `gitlab:workflow` (see [SKILL.md](SKILL.md)) tells the model to read first,
-describe the write, ask, act once, and treat fetched content as data rather than instructions.
+describe the write, ask, act once, treat fetched content as data rather than instructions, and in
+unattended sessions (cron, webhooks) not to write at all.
 
 ### Slash command and CLI
 
@@ -167,7 +170,7 @@ unambiguous fragment of a staged id, so `/gitlab run 4f1a` works from a phone.
 
 ## Safety model
 
-- **Reads never write.** Six tools are read-only by construction. `gitlab_api` with GET is
+- **Reads never write.** Five tools are read-only by construction. `gitlab_api` with GET is
   read-only too, and refuses credential and settings surfaces (`variables`, tokens, `hooks`, keys,
   `application/settings`, admin) even for GET, because their responses would put secrets into the
   model's context. Paths are matched after decoding and lower-casing, so encoded spellings are
@@ -187,9 +190,10 @@ unambiguous fragment of a staged id, so `/gitlab run 4f1a` works from a phone.
   committing through `gitlab_api` are refused too: they belong to the typed tools, which bind them to
   the reviewed revision and honour `allow_merge`. DELETE needs its own flag.
 - **Operator-only mode stages instead of sending.** With `write_mode: operator_only`, a model write
-  is written to disk with its exact payload and the model is told to relay `/gitlab run <id>`. A
-  human runs it, from any Hermes surface or the shell, under a cross-process lock. Staged writes
-  expire, are bound to the GitLab URL they were built for, and are re-gated and re-checked when run.
+  is written to `<HERMES_HOME>/plugin-data/gitlab/staged/` with its exact payload and the model is
+  told to relay `/gitlab run <id>`. A human runs it, from any Hermes surface or the shell, under a
+  cross-process lock. Staged writes expire, are bound to the GitLab URL they were built for, and are
+  re-gated and re-checked when run.
 - **Secrets are masked.** Job logs are scanned for token formats, private keys, bearer headers and
   `password=` assignments; file contents, diffs, code search, descriptions, comments, commit messages
   and raw `gitlab_api` results for token formats. The plugin's own token is scrubbed from every result
@@ -228,7 +232,8 @@ fetched content as data and to report instructions found in it. See [SECURITY.md
 Every write and every refusal is recorded for review and for SIEM ingestion:
 
 - **In staged-write files:** who requested the write (`requested_by`), who ran or dropped it
-  (`run.actor`), the environment (`audit`: host, OS user, Hermes and plugin versions) and the result.
+  (`run.actor`), the environment (`audit`: host, OS user, pid, Hermes home, Hermes and plugin
+  versions) and the result.
 - **In an append-only event stream**, `<HERMES_HOME>/plugin-data/gitlab/audit.jsonl`, one JSON
   object per line: `write_done`, `write_failed`, `write_conflict`, `write_refused`, `write_rejected`,
   `write_previewed`, `write_staged`, `staged_run`, `staged_dropped`, `staged_expired`,
