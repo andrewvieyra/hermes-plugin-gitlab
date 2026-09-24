@@ -235,7 +235,8 @@ class MergeRequests(PluginTestCase):
         self.assertEqual(mr["reviewers"], ["andrew"])
         self.assertIn("diff_refs", mr)
         self.assertEqual(out["approvals"]["approvals_left"], 1)
-        self.assertIn("include_diverged_commits_count", self.gl.calls[-2]["params"])
+        read = next(c for c in self.gl.calls if c["path"].endswith("/merge_requests/10") and c["method"] == "GET")
+        self.assertIn("include_diverged_commits_count", read["params"])
 
     def test_diffs_with_paths_and_cap(self):
         out = self.call("gitlab_merge_requests", action="diffs", project="platform/api", iid=10)

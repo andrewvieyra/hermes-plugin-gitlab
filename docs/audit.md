@@ -37,7 +37,7 @@ always present; unknown values are `null` so field mappings stay stable.
 | `session_key`, `session_id`, `task_id` | Hermes session identifiers, for joining with Hermes' own logs |
 | `cron` | `true` when the turn ran inside a Hermes cron job |
 | `os_user` | The OS account running Hermes |
-| `request` | The user's message that led to the call, truncated to 500 characters; `null` when `audit_include_request` is off |
+| `request` | The user's message that led to the call, secret-redacted (when `redact_secrets` is on) and truncated to 500 characters; `null` when `audit_include_request` is off |
 
 Identity comes from Hermes' per-session context, which the gateway binds for every turn. In a plain
 CLI session most platform fields are `null` and `os_user` is the meaningful identity.

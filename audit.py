@@ -22,6 +22,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from . import render
 from .settings import get_settings
 from .store import default_staged_dir, now_iso
 from .version import __version__
@@ -57,6 +58,7 @@ VIA_CLI = "cli"
 
 
 def _session_env(name: str) -> str:
+    """One Hermes session variable: the gateway's per-turn context when available, else the process environment."""
     try:
         from gateway.session_context import get_session_env  # type: ignore
 
@@ -66,10 +68,12 @@ def _session_env(name: str) -> str:
 
 
 def _truthy(value: str) -> bool:
+    """``1`` / ``true`` / ``yes`` / ``on`` in any case."""
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _hermes_version() -> Optional[str]:
+    """The installed Hermes version, or ``None`` outside a Hermes process."""
     try:
         from hermes_cli import __version__ as hv  # type: ignore
 
@@ -115,6 +119,8 @@ def capture_actor(kwargs: Optional[Dict[str, Any]] = None, *, via: str = VIA_MOD
     request = kwargs.get("user_task")
     if get_settings().audit_include_request and isinstance(request, str) and request.strip():
         text = request.strip()
+        if get_settings().redact_secrets:  # a token the user pasted into chat must not land in the log or a SIEM
+            text, _n = render.redact_content(text)
         actor["request"] = text if len(text) <= REQUEST_TEXT_LIMIT else text[: REQUEST_TEXT_LIMIT - 1] + "…"
     else:
         actor["request"] = None
@@ -154,6 +160,7 @@ class AuditLog:
 
     @property
     def path(self) -> Path:
+        """The configured log path, or ``<plugin-data>/gitlab/audit.jsonl``."""
         if self._path is None:
             self._path = default_staged_dir().parent / "audit.jsonl"
         return self._path
@@ -170,6 +177,7 @@ class AuditLog:
         staged_id: Optional[str] = None,
         **details: Any,
     ) -> Optional[Dict[str, Any]]:
+        """Append one event: the common fields first (``ts``, ``event``, ``actor``, ``action``, ``project``, ``target``, ``staged_id``), then *details*. Never raises; returns the record, or ``None`` when disabled."""
         if not self.enabled:
             return None
         record: Dict[str, Any] = {
@@ -245,4 +253,5 @@ def set_audit_log(log: Optional[AuditLog]) -> None:
 
 
 def emit(event: str, **fields: Any) -> Optional[Dict[str, Any]]:
+    """Module-level shortcut for ``get_audit_log().emit``."""
     return get_audit_log().emit(event, **fields)

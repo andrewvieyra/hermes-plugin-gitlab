@@ -21,7 +21,7 @@ Ten tools, one rule: **nothing is written to GitLab without the user having seen
 | `gitlab_pipelines` | no | List pipelines; one pipeline with jobs and failures; a job's log (tail or search) |
 | `gitlab_api` | GET only by default | Any other endpoint; `path: status` for connectivity, token scopes and write mode |
 | `gitlab_issue_write` | yes | Create, edit, close/reopen, comment on issues |
-| `gitlab_mr_write` | yes | Create, edit, comment (general, reply, diff line), approve, merge, rebase, resolve threads |
+| `gitlab_mr_write` | yes | Create, edit, comment (general, reply, diff line), approve, merge, cancel auto-merge, rebase, resolve threads |
 | `gitlab_pipeline_write` | yes | Run, retry, cancel pipelines; play manual jobs |
 | `gitlab_commit` | yes | Commit file changes to a branch (creating it from `start_branch` if needed) |
 

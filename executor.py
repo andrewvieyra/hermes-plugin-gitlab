@@ -27,7 +27,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import unquote
 
 from . import audit, render, targets
-from .client import GitLabClient, GitLabError
+from .client import GitLabClient, GitLabError, validate_path
 from .settings import Settings
 from .store import IN_FLIGHT, StagedStore, new_id, now_iso
 
@@ -49,6 +49,9 @@ _SENSITIVE = [
     r"(^|/)deploy_keys(/|$)",
     r"(^|/)hooks(/|$)",
     r"(^|/)triggers(/|$)",  # pipeline trigger tokens
+    r"(^|/)trigger(/|$)",  # trigger/pipeline runs with a trigger token: another credential
+    r"(^|/)pipeline_schedules/[^/]+$",  # one schedule's record includes its variables with values
+    r"(^|/)client_keys(/|$)",  # error tracking DSN keys
     r"(^|/)tokens(/|$)",  # cluster agent tokens and similar
     r"(^|/)secure_files(/|$)",
     r"(^|/)integrations(/|$)",
@@ -65,7 +68,7 @@ _SENSITIVE = [
     r"^system_hooks",
     r"^keys(/|$)",
     r"^geo(/|$)",
-    r"^audit_events",
+    r"(^|/)audit_events(/|$)",
     r"^import/",
 ]
 # Membership, permissions, settings and destructive project/group operations: refused for non-GET
@@ -77,6 +80,15 @@ _ADMIN = [
     r"^(projects|groups)$",  # creating projects or groups
     r"(^|/)merged_branches$",  # deletes every merged branch at once
     r"(^|/)(ldap_group_links|saml_group_links)(/|$)",
+    r"(^|/)(access_requests|invitations|billable_members)(/|$)",  # membership by other names
+    r"(^|/)job_token_scope(/|$)",
+    r"(^|/)pages(/|$)",
+    r"(^|/)(protect|unprotect)$",  # legacy branch protection
+    r"(^|/)reset_approvals$",
+    r"(^|/)fork(/|$)",  # creates a project in another namespace
+    r"(^|/)(move|clone)$",  # moves an issue into a project the allow-list never saw
+    r"^groups/[^/]+/projects/[^/]+$",  # transfers a project into a group
+    r"^personal_access_tokens/self$",  # readable for `status`; revoking or rotating the token in use is not
     r"(^|/)members(/|$)",
     r"(^|/)share(/|$)",
     r"(^|/)protected_(branches|tags|environments)(/|$)",
@@ -92,8 +104,33 @@ _ADMIN = [
     r"^applications(/|$)",
     r"^oauth(/|$)",
 ]
+# Writes a typed tool guards with a precondition or an extra flag. Through the escape hatch they would
+# run with neither, so they are refused and the model is pointed at the typed tool.
+_TYPED_ONLY = [
+    (
+        r"(^|/)merge_requests/\d+/(merge|approve)$",
+        "gitlab_mr_write, which binds the write to the reviewed head sha and honours allow_merge",
+    ),
+    (r"(^|/)repository/commits$", "gitlab_commit, which validates the actions and binds the commit to the branch head"),
+]
 _SENSITIVE_RE = [re.compile(p) for p in _SENSITIVE]
 _ADMIN_RE = [re.compile(p) for p in _ADMIN]
+_TYPED_ONLY_RE = [(re.compile(p), hint) for p, hint in _TYPED_ONLY]
+# Query or body keys that change who a call runs as. ``sudo`` impersonates another user with an admin
+# token; the others would swap the credential for one the model supplies.
+_AUTH_PARAMS = {"sudo", "private_token", "access_token", "oauth_token", "job_token"}
+
+
+def auth_override(params: Any, body: Any) -> Optional[str]:
+    """Why a raw call is refused because of an authentication parameter, or ``None``. Checked wherever
+    the model controls the query or the body (``gitlab_api`` GET and every raw write, again at run time
+    for staged ones); the typed tools only forward whitelisted keys."""
+    for source, name in ((params, "params"), (body, "body")):
+        if isinstance(source, dict):
+            for key in source:
+                if str(key).strip().lower() in _AUTH_PARAMS:
+                    return f"gitlab_api refused: {name}.{key} would change who the call runs as; it must run as the configured token and user"
+    return None
 
 
 def path_forms(path: str) -> List[str]:
@@ -128,11 +165,16 @@ def raw_path_refusal(method: str, path: str) -> Optional[str]:
         for regex in _ADMIN_RE:
             if any(regex.search(form) for form in forms):
                 return f"gitlab_api refused: {method.upper()} {path!r} changes membership, permissions or settings; do it in the GitLab UI"
+        for regex, hint in _TYPED_ONLY_RE:
+            if any(regex.search(form) for form in forms):
+                return f"gitlab_api refused: {method.upper()} {path!r} has a typed tool: use {hint}"
     return None
 
 
 @dataclass
 class WriteRequest:
+    """The exact write a tool wants to make, plus everything the gate needs to judge it."""
+
     action: str  # "issue.create", "mr.merge", "commit.create", "api.POST", ...
     method: str
     path: str  # relative to /api/v4
@@ -148,14 +190,17 @@ class WriteRequest:
     notes: List[str] = field(default_factory=list)  # advisory notes for the preview
 
     def to_dict(self) -> Dict[str, Any]:
+        """JSON-serialisable form; this is what a staged-write file stores."""
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> WriteRequest:
+        """Rebuild from :meth:`to_dict` output, ignoring keys an older file may carry."""
         known = {f for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
         return cls(**{k: v for k, v in data.items() if k in known})
 
     def preview(self) -> Dict[str, Any]:
+        """What ``dry_run`` shows: the call, the payload (commit contents clipped), preconditions and required flags."""
         payload = self.json
         if self.action == "commit.create" and isinstance(payload, dict) and isinstance(payload.get("actions"), list):
             payload = dict(payload, actions=[_clip_action(a) for a in payload["actions"]])
@@ -214,7 +259,11 @@ def gate(client: GitLabClient, req: WriteRequest, settings: Settings, cache: Dic
             f"plugins.entries.gitlab.settings.{missing[0]}: true in config.yaml"
         )
     if req.action.startswith("api."):
-        reason = raw_path_refusal(req.method, req.path)
+        try:  # a staged document is re-gated when it runs, so the path is validated here too, not only in the builder
+            validate_path(req.path)
+        except GitLabError as exc:
+            return f"{req.action} refused: {exc}"
+        reason = raw_path_refusal(req.method, req.path) or auth_override(req.params, req.json)
         if reason:
             return reason
     if settings.write_projects:
@@ -229,6 +278,7 @@ def gate(client: GitLabClient, req: WriteRequest, settings: Settings, cache: Dic
 
 
 def should_stage(actor: Dict[str, Any], settings: Settings) -> bool:
+    """``operator_only`` stages model-initiated writes; operator paths (slash command, CLI) execute directly."""
     return settings.write_mode == "operator_only" and actor.get("kind") != "operator"
 
 
@@ -236,6 +286,7 @@ def should_stage(actor: Dict[str, Any], settings: Settings) -> bool:
 
 
 def _sha_matches(expected: str, actual: str) -> bool:
+    """Prefix match for shas of at least 7 characters, exact match for shorter ones; case-insensitive."""
     expected, actual = (expected or "").strip().lower(), (actual or "").strip().lower()
     if not expected or not actual:
         return False
@@ -286,6 +337,7 @@ _VERBS = {
     "merge": "merged",
     "rebase": "rebase started for",
     "resolve": "resolved thread on",
+    "cancel_auto_merge": "auto-merge cancelled for",
     "run": "started",
     "retry": "retried",
     "cancel": "cancelled",
@@ -369,6 +421,7 @@ def describe_result(req: WriteRequest, body: Any) -> Dict[str, Any]:
 def _emit(
     event: str, client: GitLabClient, req: WriteRequest, actor: Dict[str, Any], staged_id: Optional[str], **details: Any
 ) -> None:
+    """Audit event carrying the request's action, project and target."""
     audit.emit(
         event,
         actor=actor,
@@ -490,11 +543,13 @@ def perform(
 
 
 def _expires_at(created_at: str, hours: int) -> str:
+    """Expiry stamp for a staged write created at *created_at* (at least one hour ahead)."""
     parsed = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
     return (parsed + timedelta(hours=max(1, hours))).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def is_expired(doc: Dict[str, Any], now: Optional[datetime] = None) -> bool:
+    """Whether a staged document's ``expires_at`` has passed; an unparsable stamp counts as expired."""
     now = now or datetime.now(timezone.utc)
     try:
         return datetime.fromisoformat(str(doc.get("expires_at")).replace("Z", "+00:00")) <= now
@@ -505,6 +560,7 @@ def is_expired(doc: Dict[str, Any], now: Optional[datetime] = None) -> bool:
 def stage(
     client: GitLabClient, req: WriteRequest, *, actor: Dict[str, Any], settings: Settings, store: StagedStore
 ) -> Dict[str, Any]:
+    """Write the request to the staged store for an operator and return the instructions the model relays."""
     created = now_iso()
     doc: Dict[str, Any] = {
         "id": new_id(),

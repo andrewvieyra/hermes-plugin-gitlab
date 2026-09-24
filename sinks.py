@@ -98,6 +98,7 @@ _ENV_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 
 def expand_env(value: str) -> str:
+    """Replace ``${VAR}`` with the environment value (empty when unset)."""
     return _ENV_RE.sub(lambda m: os.environ.get(m.group(1), ""), value)
 
 
@@ -105,10 +106,12 @@ def expand_env(value: str) -> str:
 
 
 def _cef_header(value: Any) -> str:
+    """Escape a CEF header field (``|`` and backslashes)."""
     return str(value).replace("\\", "\\\\").replace("|", "\\|").replace("\r", " ").replace("\n", " ")
 
 
 def _cef_ext(value: Any) -> str:
+    """Escape a CEF extension value (``=``, backslashes, newlines); non-strings become JSON."""
     text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
     return text.replace("\\", "\\\\").replace("=", "\\=").replace("\r", " ").replace("\n", "\\n")
 
@@ -178,12 +181,16 @@ def to_cef(record: Dict[str, Any]) -> str:
 
 
 class Sink:
+    """One destination for audit records."""
+
     name = "sink"
 
     def send(self, record: Dict[str, Any]) -> None:  # pragma: no cover - interface
+        """Deliver one record; raise on failure so the worker can retry."""
         raise NotImplementedError
 
     def close(self) -> None:
+        """Release any connection."""
         return None
 
 
@@ -223,6 +230,7 @@ class SyslogSink(Sink):
             self.hostname = "-"
 
     def message(self, record: Dict[str, Any]) -> str:
+        """RFC 5424 line: PRI, version, timestamp, host, app, pid, msgid, then the JSON or CEF body."""
         pri = self.facility * 8 + severity_of(record)
         stamp = record.get("ts") or datetime.now(timezone.utc).isoformat()
         body = (
@@ -250,6 +258,7 @@ class SyslogSink(Sink):
         return sock
 
     def send(self, record: Dict[str, Any]) -> None:
+        """Send one record; a failed connection is dropped so the next attempt reconnects."""
         payload = self.message(record).encode("utf-8")
         try:
             sock = self._connect()
@@ -263,6 +272,7 @@ class SyslogSink(Sink):
             raise
 
     def close(self) -> None:
+        """Close the socket, if any."""
         if self._sock is not None:
             try:
                 self._sock.close()
@@ -294,6 +304,7 @@ class HttpSink(Sink):
         self.name = f"http {url}"
 
     def body(self, record: Dict[str, Any]) -> bytes:
+        """The POST body: the record, or the Splunk HEC envelope around it."""
         if self.fmt == "hec":
             try:
                 epoch = datetime.fromisoformat(str(record.get("ts")).replace("Z", "+00:00")).timestamp()
@@ -305,6 +316,7 @@ class HttpSink(Sink):
         return json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
 
     def send(self, record: Dict[str, Any]) -> None:
+        """POST one record with the configured headers (``${VAR}`` expanded at send time)."""
         headers = {"Content-Type": "application/json", "User-Agent": f"hermes-plugin-gitlab/{__version__}"}
         headers.update({k: expand_env(str(v)) for k, v in self.headers.items()})
         req = urllib.request.Request(self.url, data=self.body(record), headers=headers, method="POST")
@@ -375,6 +387,7 @@ class SinkWorker:
             self._thread.start()
 
     def enqueue(self, record: Dict[str, Any]) -> bool:
+        """Queue a record; ``False`` when there are no sinks or the queue is full (the event is dropped for sinks only)."""
         if not self.sinks:
             return False
         try:
@@ -427,6 +440,7 @@ class SinkWorker:
         return self._queue.unfinished_tasks == 0
 
     def close(self, timeout: float = 2.0) -> None:
+        """Flush, stop the thread and close every sink."""
         self.flush(timeout)
         self._stop.set()
         if self._thread.is_alive():
@@ -447,6 +461,7 @@ def configure(specs: Any) -> SinkWorker:
 
 
 def get_worker() -> SinkWorker:
+    """The process-wide worker, built lazily from ``audit_sinks``."""
     global _worker
     with _worker_lock:
         if _worker is None:

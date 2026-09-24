@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import fnmatch
 import re
+import time
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from . import timefmt
@@ -33,6 +34,7 @@ def clip(text: Any, limit: int) -> str:
 
 
 def strip_ansi(text: str) -> str:
+    """Remove ANSI colour and cursor sequences."""
     return _ANSI_RE.sub("", text or "")
 
 
@@ -53,23 +55,118 @@ def clean_job_log(text: str) -> str:
 
 
 def tail_lines(text: str, count: int) -> Tuple[List[str], int]:
+    """The last *count* lines of *text* and its total line count."""
     lines = text.split("\n") if text else []
     count = max(1, int(count))
     return lines[-count:], len(lines)
 
 
-def search_lines(text: str, pattern: str, *, context: int = 2, max_matches: int = 50) -> Tuple[str, int, int]:
+MAX_REPEAT = 100  # counted repeats above this are refused
+MAX_UNBOUNDED = 2  # `*` / `+` / `{n,}` occurrences allowed in one pattern (each adds a power of n)
+SEARCH_LINE_CHARS = 500  # a line is searched within its first characters: bounds the per-line cost
+SEARCH_BUDGET_SECONDS = 2.0  # then the search stops and says so
+
+
+def regex_risk(pattern: str) -> Optional[str]:
+    """Why a model-supplied regex is refused before it is compiled, or ``None``. Python's ``re`` has no
+    timeout, so the shapes that backtrack exponentially or cubically on a 2,000-character log line are
+    rejected up front: a repeated group that itself contains a quantifier or an alternation
+    (``(a+)+``, ``(a|aa)*``), backreferences, counted repeats above :data:`MAX_REPEAT`, and more than
+    :data:`MAX_UNBOUNDED` unbounded quantifiers (``.*.*.*x`` is cubic). Character classes are skipped, so
+    ``[+*]+`` is fine. Conservative by design: a refused pattern can always be written as literals."""
+    unbounded = 0
+    stack: List[int] = []
+    i, n = 0, len(pattern)
+    too_many = f"at most {MAX_UNBOUNDED} unbounded quantifiers (*, + or {{n,}}) in one pattern"
+    while i < n:
+        ch = pattern[i]
+        if ch == "\\":
+            nxt = pattern[i + 1] if i + 1 < n else ""
+            if nxt.isdigit() and nxt != "0":
+                return "backreferences are not allowed"
+            i += 2
+            continue
+        if ch == "[":
+            j = i + 1
+            if j < n and pattern[j] == "^":
+                j += 1
+            if j < n and pattern[j] == "]":
+                j += 1
+            while j < n and pattern[j] != "]":
+                j += 2 if pattern[j] == "\\" else 1
+            i = j + 1
+            continue
+        if ch == "(":
+            if pattern.startswith("(?P=", i):
+                return "backreferences are not allowed"
+            stack.append(i)
+            i += 1
+            continue
+        if ch == ")":
+            start = stack.pop() if stack else 0
+            i += 1
+            if i < n and pattern[i] in "*+{":
+                inner = re.sub(r"^\?(?::|P<[^>]*>|[aiLmsux]+:)", "", pattern[start + 1 : i - 1])
+                if any(c in inner for c in "*+?{|"):
+                    return "a repeated group must not contain another quantifier or an alternation"
+            continue
+        if ch in "*+":
+            unbounded += 1
+            if unbounded > MAX_UNBOUNDED:
+                return too_many
+            i += 1
+            continue
+        if ch == "{":
+            match = re.match(r"\{(\d*)(?:,(\d*))?\}", pattern[i:])
+            if match:
+                low, high = match.group(1), match.group(2)
+                if high is None:
+                    if low and int(low) > MAX_REPEAT:
+                        return f"counted repeats above {MAX_REPEAT} are not allowed"
+                elif high == "":
+                    unbounded += 1
+                    if unbounded > MAX_UNBOUNDED:
+                        return too_many
+                elif int(high) > MAX_REPEAT:
+                    return f"counted repeats above {MAX_REPEAT} are not allowed"
+                i += match.end()
+                continue
+        i += 1
+    return None
+
+
+def search_lines(
+    text: str,
+    pattern: str,
+    *,
+    context: int = 2,
+    max_matches: int = 50,
+    budget: float = SEARCH_BUDGET_SECONDS,
+) -> Tuple[str, int, int, bool]:
     """Lines matching *pattern* (regex, case-insensitive; falls back to a literal) with *context*
-    lines around each, merged into windows. Returns ``(snippet, total_lines, match_count)``."""
+    lines around each, merged into windows. Returns ``(snippet, total_lines, match_count, stopped)``.
+
+    Two bounds keep a hostile pattern from pinning the CPU even after :func:`regex_risk`: each line is
+    searched within its first :data:`SEARCH_LINE_CHARS` characters (two unbounded quantifiers are cubic
+    in the line length under ``re.search``), and the scan stops once *budget* seconds have passed, with
+    ``stopped`` set so the caller can say the result is partial."""
     lines = text.split("\n") if text else []
     try:
         regex = re.compile(pattern, re.IGNORECASE)
     except re.error:
         regex = re.compile(re.escape(pattern), re.IGNORECASE)
-    hits = [i for i, line in enumerate(lines) if regex.search(line)]
+    hits: List[int] = []
+    stopped = False
+    deadline = time.monotonic() + budget
+    for i, line in enumerate(lines):
+        if regex.search(line[:SEARCH_LINE_CHARS]):
+            hits.append(i)
+        if time.monotonic() > deadline:
+            stopped = i + 1 < len(lines)
+            break
     shown = hits[: max(1, int(max_matches))]
     if not shown:
-        return "", len(lines), 0
+        return "", len(lines), 0, stopped
     windows: List[List[int]] = []
     for hit in shown:
         start, end = max(0, hit - context), min(len(lines) - 1, hit + context)
@@ -85,7 +182,7 @@ def search_lines(text: str, pattern: str, *, context: int = 2, max_matches: int 
         for number in range(start, end + 1):
             marker = ">" if number in hit_set else " "
             out.append(f"{marker}{number + 1:6d}: {lines[number]}")
-    return "\n".join(out), len(lines), len(hits)
+    return "\n".join(out), len(lines), len(hits), stopped
 
 
 # -- secret redaction -----------------------------------------------------------------------------
@@ -121,6 +218,7 @@ _MASK = "[REDACTED]"
 
 
 def _apply(text: str, rules: Iterable[Tuple[str, re.Pattern[str]]]) -> Tuple[str, int]:
+    """Run every rule; a rule with a capture group keeps group 1 (the label) and masks the rest."""
     count = 0
     for _name, regex in rules:
 
@@ -194,6 +292,7 @@ def redact_any(obj: Any) -> Tuple[Any, int]:
 
 
 def _get(obj: Any, *keys: str, default: Any = None) -> Any:
+    """Nested ``dict`` lookup that tolerates missing or non-dict levels."""
     for key in keys:
         if not isinstance(obj, dict):
             return default
@@ -202,25 +301,30 @@ def _get(obj: Any, *keys: str, default: Any = None) -> Any:
 
 
 def user(u: Any) -> Optional[Dict[str, Any]]:
+    """``{id, username, name}`` for a user object, or ``None``."""
     if not isinstance(u, dict):
         return None
     return {"id": u.get("id"), "username": u.get("username"), "name": u.get("name")}
 
 
 def username(u: Any) -> Optional[str]:
+    """The username of a user object, or ``None``."""
     return u.get("username") if isinstance(u, dict) else None
 
 
 def usernames(items: Any) -> List[str]:
+    """Usernames of a list of user objects."""
     return [x["username"] for x in (items or []) if isinstance(x, dict) and x.get("username")]
 
 
 def user_full(u: Any) -> Dict[str, Any]:
+    """The user fields ``status`` shows: id, username, name, state, web_url, is_admin, bot."""
     u = u if isinstance(u, dict) else {}
     return {k: u.get(k) for k in ("id", "username", "name", "state", "web_url", "is_admin", "bot") if k in u}
 
 
 def project(p: Any, full: bool = False) -> Dict[str, Any]:
+    """Model-facing summary of a project; ``full`` adds merge and squash settings and the namespace."""
     p = p if isinstance(p, dict) else {}
     out = {
         "id": p.get("id"),
@@ -258,12 +362,14 @@ def project(p: Any, full: bool = False) -> Dict[str, Any]:
 
 
 def milestone(m: Any) -> Optional[Dict[str, Any]]:
+    """Model-facing summary of a milestone, or ``None``."""
     if not isinstance(m, dict):
         return None
     return {k: m.get(k) for k in ("id", "iid", "title", "state", "due_date", "start_date", "web_url")}
 
 
 def issue(i: Any, full: bool = False) -> Dict[str, Any]:
+    """Model-facing summary of an issue; ``full`` adds the description and single-view fields."""
     i = i if isinstance(i, dict) else {}
     out = {
         "iid": i.get("iid"),
@@ -296,6 +402,7 @@ def issue(i: Any, full: bool = False) -> Dict[str, Any]:
 
 
 def merge_request(m: Any, full: bool = False) -> Dict[str, Any]:
+    """Model-facing summary of a merge request; ``full`` adds the description, ``diff_refs`` and merge settings."""
     m = m if isinstance(m, dict) else {}
     head = m.get("head_pipeline") if isinstance(m.get("head_pipeline"), dict) else None
     out = {
@@ -346,6 +453,7 @@ def merge_request(m: Any, full: bool = False) -> Dict[str, Any]:
 
 
 def approvals(a: Any) -> Optional[Dict[str, Any]]:
+    """Model-facing summary of the approvals endpoint, or ``None``."""
     if not isinstance(a, dict):
         return None
     return {
@@ -359,6 +467,7 @@ def approvals(a: Any) -> Optional[Dict[str, Any]]:
 
 
 def pipeline(p: Any, full: bool = False) -> Dict[str, Any]:
+    """Model-facing summary of a pipeline; ``full`` adds YAML errors, coverage and the detailed status."""
     p = p if isinstance(p, dict) else {}
     out = {
         "id": p.get("id"),
@@ -388,6 +497,7 @@ def pipeline(p: Any, full: bool = False) -> Dict[str, Any]:
 
 
 def job(j: Any) -> Dict[str, Any]:
+    """Model-facing summary of a CI job."""
     j = j if isinstance(j, dict) else {}
     artifacts = j.get("artifacts") if isinstance(j.get("artifacts"), list) else []
     return {
@@ -423,12 +533,14 @@ def bridge(b: Any) -> Dict[str, Any]:
 
 
 def position(p: Any) -> Optional[Dict[str, Any]]:
+    """The diff position of a note (paths and line numbers), or ``None``."""
     if not isinstance(p, dict):
         return None
     return {k: p.get(k) for k in ("new_path", "old_path", "new_line", "old_line", "position_type")}
 
 
 def note(n: Any) -> Dict[str, Any]:
+    """Model-facing summary of a note with its body clipped and its diff position when it has one."""
     n = n if isinstance(n, dict) else {}
     out = {
         "id": n.get("id"),
@@ -450,6 +562,7 @@ def note(n: Any) -> Dict[str, Any]:
 
 
 def discussion(d: Any) -> Dict[str, Any]:
+    """A thread: its notes, whether it is resolvable, and whether every resolvable note is resolved."""
     d = d if isinstance(d, dict) else {}
     notes = [note(n) for n in (d.get("notes") or []) if isinstance(n, dict)]
     resolvable = any(n.get("resolvable") for n in notes)
@@ -464,11 +577,13 @@ def discussion(d: Any) -> Dict[str, Any]:
 
 
 def discussion_is_system(d: Any) -> bool:
+    """Whether a discussion consists only of system notes (label changes, pushes, ...)."""
     notes = (d or {}).get("notes") or []
     return bool(notes) and all(isinstance(n, dict) and n.get("system") for n in notes)
 
 
 def commit(c: Any, full: bool = False) -> Dict[str, Any]:
+    """Model-facing summary of a commit; ``full`` adds the message, stats, status and last pipeline."""
     c = c if isinstance(c, dict) else {}
     out = {
         "id": c.get("id"),
@@ -491,6 +606,7 @@ def commit(c: Any, full: bool = False) -> Dict[str, Any]:
 
 
 def branch(b: Any) -> Dict[str, Any]:
+    """Model-facing summary of a branch with its head commit."""
     b = b if isinstance(b, dict) else {}
     c = b.get("commit") if isinstance(b.get("commit"), dict) else {}
     return {
@@ -509,6 +625,7 @@ def branch(b: Any) -> Dict[str, Any]:
 
 
 def tag(t: Any) -> Dict[str, Any]:
+    """Model-facing summary of a tag with its commit and release."""
     t = t if isinstance(t, dict) else {}
     c = t.get("commit") if isinstance(t.get("commit"), dict) else {}
     return {
@@ -527,11 +644,13 @@ def tag(t: Any) -> Dict[str, Any]:
 
 
 def tree_entry(e: Any) -> Dict[str, Any]:
+    """One repository tree entry: path, type, mode, id."""
     e = e if isinstance(e, dict) else {}
     return {"path": e.get("path"), "type": e.get("type"), "mode": e.get("mode"), "id": e.get("id")}
 
 
 def search_result(scope: str, item: Any) -> Dict[str, Any]:
+    """The summary matching a search *scope* (project, issue, MR, commit, milestone, user, blob, note)."""
     if scope == "projects":
         return project(item)
     if scope == "issues":
@@ -562,6 +681,7 @@ def search_result(scope: str, item: Any) -> Dict[str, Any]:
 
 
 def diff_status(item: Dict[str, Any]) -> str:
+    """``added`` / ``deleted`` / ``renamed`` / ``modified`` from GitLab's diff flags."""
     if item.get("new_file"):
         return "added"
     if item.get("deleted_file"):
@@ -572,6 +692,7 @@ def diff_status(item: Dict[str, Any]) -> str:
 
 
 def count_changes(diff_text: str) -> Tuple[int, int]:
+    """Added and removed line counts of a unified diff."""
     adds = dels = 0
     for line in (diff_text or "").split("\n"):
         if line.startswith("+") and not line.startswith("+++"):
@@ -582,6 +703,7 @@ def count_changes(diff_text: str) -> Tuple[int, int]:
 
 
 def _path_matches(item: Dict[str, Any], patterns: List[str]) -> bool:
+    """Whether a diff item matches any of the path globs or directory prefixes."""
     if not patterns:
         return True
     candidates = [p for p in (item.get("new_path"), item.get("old_path")) if p]
@@ -706,6 +828,7 @@ def mr_report(
     *,
     unresolved_truncated: bool = False,
 ) -> str:
+    """Operator text for ``/gitlab mr``: status, approvals, pipeline and unresolved threads on a few lines."""
     head = mr.get("head_pipeline") or {}
     lines = [
         f"!{mr.get('iid')} {mr.get('title')}  [{mr.get('state')}{' draft' if mr.get('draft') else ''}]",
@@ -726,6 +849,7 @@ def mr_report(
 
 
 def status_report(data: Dict[str, Any]) -> str:
+    """Operator text for ``/gitlab status``."""
     gl, me, tok, plugin = data.get("gitlab") or {}, data.get("user") or {}, data.get("token"), data.get("plugin") or {}
     lines = [
         f"GitLab {gl.get('version', '?')} ({gl.get('revision', '?')}) at {data.get('url')}",
@@ -746,6 +870,7 @@ def status_report(data: Dict[str, Any]) -> str:
 
 
 def staged_report(doc: Dict[str, Any]) -> str:
+    """Operator text for one staged write (``/gitlab show`` and ``pending``)."""
     req = doc.get("request") or {}
     lines = [
         f"{doc.get('id')}  {doc.get('status')}  {req.get('summary')}",
@@ -768,6 +893,7 @@ def staged_report(doc: Dict[str, Any]) -> str:
 
 
 def audit_line(record: Dict[str, Any]) -> str:
+    """One line per audit record for ``/gitlab audit``; newlines in messages are collapsed."""
     actor = record.get("actor") or {}
     who = actor.get("user_name") or actor.get("user_id") or actor.get("os_user") or "?"
     where = actor.get("platform") or actor.get("via") or "?"
@@ -775,5 +901,5 @@ def audit_line(record: Dict[str, Any]) -> str:
     what = f"{record.get('action') or ''} {record.get('project') or ''}".strip()
     if target.get("iid") or target.get("id"):
         what += f" {target.get('kind', '')}{'!' if target.get('kind') == 'merge_request' else '#'}{target.get('iid') or target.get('id')}"
-    detail = record.get("error") or record.get("reason") or record.get("summary") or ""
+    detail = " ".join(str(record.get("error") or record.get("reason") or record.get("summary") or "").split())
     return f"{timefmt.local(record.get('ts'))}  {record.get('event'):<16} {who}@{where}  {what}  {clip(detail, 120)}"

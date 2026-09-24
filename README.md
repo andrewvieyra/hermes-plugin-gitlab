@@ -132,12 +132,13 @@ Environment variables:
 | `gitlab_pipelines` | no | Pipelines, one pipeline with jobs, failures and downstream pipelines, jobs by status, a job's log (tail or regex search, colour and sections stripped) |
 | `gitlab_api` | GET, or gated | Any other endpoint; `path: status` for connectivity, token scopes and write mode |
 | `gitlab_issue_write` | yes | Create, edit, close/reopen, comment, reply, internal notes |
-| `gitlab_mr_write` | yes | Create, edit, comment (general, reply, on a diff line), approve, unapprove, merge, rebase, resolve |
+| `gitlab_mr_write` | yes | Create, edit, comment (general, reply, on a diff line), approve, unapprove, merge, cancel auto-merge, rebase, resolve |
 | `gitlab_pipeline_write` | yes | Run with variables and inputs, retry, cancel, play a manual job |
 | `gitlab_commit` | yes | One atomic commit of create/update/delete/move/chmod actions, creating the branch first if needed, or just the branch |
 
 Every write tool accepts `dry_run: true` and returns the exact method, path, payload, preconditions
-and required flags without sending anything. Full parameter reference: [docs/tools.md](docs/tools.md).
+and required flags without sending anything. Full parameter reference: [docs/tools.md](docs/tools.md);
+endpoint-by-endpoint coverage of the GitLab REST API: [docs/api-coverage.md](docs/api-coverage.md).
 
 `project` accepts a numeric id, a `group/project` path, or a GitLab URL of the project or of one of
 its issues, merge requests, pipelines or commits, so "review this: https://gitlab…/-/merge_requests/42"
@@ -181,15 +182,19 @@ unambiguous fragment of a staged id, so `/gitlab run 4f1a` works from a phone.
 - **Commits are bound to the branch head.** `gitlab_commit` takes `expected_head_sha`; the branch
   is re-read before the commit and a moved head stops it. Diff comments are bound to the MR head.
 - **Administrative surfaces stay closed.** Even with raw writes enabled, membership, permissions,
-  protected branches, approval rules, runners, project and group settings, transfer and archive are
-  refused. DELETE needs its own flag.
+  protected branches, approval rules, runners, project and group settings, transfer, archive, forking
+  and issue moves are refused, and so are `sudo` and credential parameters. Merging, approving and
+  committing through `gitlab_api` are refused too: they belong to the typed tools, which bind them to
+  the reviewed revision and honour `allow_merge`. DELETE needs its own flag.
 - **Operator-only mode stages instead of sending.** With `write_mode: operator_only`, a model write
   is written to disk with its exact payload and the model is told to relay `/gitlab run <id>`. A
   human runs it, from any Hermes surface or the shell, under a cross-process lock. Staged writes
   expire, are bound to the GitLab URL they were built for, and are re-gated and re-checked when run.
 - **Secrets are masked.** Job logs are scanned for token formats, private keys, bearer headers and
-  `password=` assignments; file contents, diffs, code search, issue and MR descriptions, comments and
-  commit messages for token formats. The plugin's own token is scrubbed from every error message.
+  `password=` assignments; file contents, diffs, code search, descriptions, comments, commit messages
+  and raw `gitlab_api` results for token formats. The plugin's own token is scrubbed from every result
+  and error whatever `redact_secrets` says, and the user's triggering message is redacted before it is
+  recorded in the audit trail.
 - **Nothing is dumped.** Lists, diffs, files and logs are capped by the operator, and truncation is
   reported so the model asks for a slice instead of guessing.
 - **Everything is attributed.** Every write, refusal, rejection, conflict, preview and staged action

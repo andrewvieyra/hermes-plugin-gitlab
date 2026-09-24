@@ -21,6 +21,7 @@ def get_zone() -> Optional[tzinfo]:
 
 
 def parse_utc(stamp: Optional[str]) -> Optional[datetime]:
+    """A stored stamp as an aware datetime (naive stamps are taken as UTC), or ``None`` when it does not parse."""
     if not stamp:
         return None
     try:

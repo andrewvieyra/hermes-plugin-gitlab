@@ -18,6 +18,7 @@ IID = {
 
 
 def _limit(defaults: str) -> Dict[str, Any]:
+    """Schema for a ``limit`` argument, with the per-action defaults in its description."""
     return {
         "type": "integer",
         "minimum": 1,
@@ -45,6 +46,7 @@ DATE = {"type": "string", "description": "ISO 8601 date-time, e.g. 2026-09-01T00
 def _schema(
     name: str, description: str, properties: Dict[str, Any], required: Optional[List[str]] = None
 ) -> Dict[str, Any]:
+    """One tool schema in the shape Hermes registers: ``name``, ``description``, ``parameters``."""
     params: Dict[str, Any] = {"type": "object", "properties": properties, "additionalProperties": False}
     if required:
         params["required"] = required
@@ -281,6 +283,7 @@ GITLAB_PIPELINES = _schema(
             "description": "list: push, web, trigger, schedule, api, merge_request_event, ...",
         },
         "username": {"type": "string", "description": "list: pipelines triggered by this user."},
+        "name": {"type": "string", "description": "list: pipeline name filter (GitLab 15.11+)."},
         "scope": {
             "type": "array",
             "items": {"type": "string"},
@@ -294,7 +297,8 @@ GITLAB_PIPELINES = _schema(
         },
         "search": {
             "type": "string",
-            "description": "log: regex; returns matching lines with context instead of the tail.",
+            "maxLength": 200,
+            "description": "log: regex (at most 200 characters); returns matching lines with context instead of the tail.",
         },
         "context": {
             "type": "integer",
@@ -317,8 +321,9 @@ GITLAB_API = _schema(
     "milestones, groups, ...). path is relative to /api/v4. GET is always allowed except on credential and "
     "settings surfaces (variables, tokens, hooks, keys, admin). Other methods need the operator to enable "
     "allow_raw_writes (and allow_raw_delete for DELETE) and go through the same write gate as every other "
-    "write; membership, permission and settings endpoints are refused regardless. path='status' returns "
-    "connectivity, the token's identity and scopes, and the plugin's write mode.",
+    "write; membership, permission and settings endpoints are refused regardless, and so are merge, approve "
+    "and commit endpoints (use gitlab_mr_write / gitlab_commit) and sudo or token parameters. path='status' "
+    "returns connectivity, the token's identity and scopes, and the plugin's write mode.",
     {
         "method": {"type": "string", "enum": ["GET", "POST", "PUT", "PATCH", "DELETE"], "description": "Default GET."},
         "path": {"type": "string", "description": "e.g. 'projects/42/releases' or 'projects/group%2Fproj/labels'."},
@@ -373,12 +378,23 @@ GITLAB_MR_WRITE = _schema(
     "the current head. action=approve and action=merge take sha from gitlab_merge_requests get so they apply "
     "only to the reviewed revision; merge is refused unless the operator enabled allow_merge and is "
     "irreversible. action=rebase rebases onto the target; action=resolve resolves (or reopens with "
-    "resolved=false) a thread. If the result says staged, relay the command it names and stop.",
+    "resolved=false) a thread; action=cancel_auto_merge withdraws a pending auto-merge. If the result says "
+    "staged, relay the command it names and stop.",
     {
         "project": PROJECT,
         "action": {
             "type": "string",
-            "enum": ["create", "update", "comment", "approve", "unapprove", "merge", "rebase", "resolve"],
+            "enum": [
+                "create",
+                "update",
+                "comment",
+                "approve",
+                "unapprove",
+                "merge",
+                "rebase",
+                "resolve",
+                "cancel_auto_merge",
+            ],
         },
         "iid": IID,
         "source_branch": {"type": "string"},

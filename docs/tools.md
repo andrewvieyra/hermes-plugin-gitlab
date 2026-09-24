@@ -67,7 +67,7 @@ as label changes excluded unless asked, every page scanned), `discussions_total`
 | `action` | Parameters | Returns |
 |---|---|---|
 | `list` (default) | `project` (optional), `state`, `scope`, `labels`, `milestone`, `author`, `assignee` (username, `None`, `Any`), `reviewer`, `search`, `source_branch`, `target_branch`, `draft`, `iids`, `order_by`, `sort`, date filters | merge requests |
-| `get` | `project`, `iid` | `merge_request` (description, `sha`, `detailed_merge_status`, `has_conflicts`, `head_pipeline`, `diff_refs`, `diverged_commits_count`, `rebase_in_progress`), `approvals` |
+| `get` | `project`, `iid` | `merge_request` (description, `sha`, `detailed_merge_status`, `has_conflicts`, `head_pipeline`, `diff_refs`, `diverged_commits_count`, `rebase_in_progress`), `approvals`, `closes_issues` |
 | `diffs` | `project`, `iid`, `paths`, `max_bytes` | `diff` text and `diff_summary` (see gitlab_repo) |
 | `discussions` | `project`, `iid`, `include_system`, `only_unresolved`, `limit` | threads with `id`, `resolvable`, `resolved`, notes with `position` (`new_path`, `old_path`, `new_line`, `old_line`). Every page is scanned (up to 2,000 discussions) so `unresolved` counts all open threads, not one page; `matched` is the number of threads that passed the filters, `returned` how many were kept under `limit`, `scanned_all` whether the scan reached the last page |
 | `commits` | `project`, `iid` | commits |
@@ -77,11 +77,11 @@ as label changes excluded unless asked, every page scanned), `discussions_total`
 
 | `action` | Parameters | Returns |
 |---|---|---|
-| `list` (default) | `project`, `status`, `ref`, `sha`, `source`, `username`, `order_by`, `sort`, `updated_after`, `updated_before`; or `latest: true` with optional `ref` | pipelines, or `pipeline` |
+| `list` (default) | `project`, `status`, `ref`, `sha`, `source`, `username`, `name`, `order_by`, `sort`, `updated_after`, `updated_before`; or `latest: true` with optional `ref` | pipelines, or `pipeline` |
 | `get` | `project`, `pipeline_id`, `include_retried` | `pipeline`, `jobs`, `failed_jobs` (failed and not `allow_failure`), `stages` (status counts per stage), `bridges` (trigger jobs with their `downstream_pipeline`) |
 | `jobs` | `project`, `pipeline_id` (optional: project-wide when omitted), `scope` (job statuses; ignored by `list`, which takes `status`), `include_retried` | jobs |
 | `job` | `project`, `job_id` | `job` |
-| `log` | `project`, `job_id`, `tail_lines` (default 200, capped by `max_log_lines`), or `search` (regex) with `context` (default 2) and `max_matches` (default 50) | `job`, `log`, `total_lines`, `returned_lines` / `matches`, `truncated`, `redacted` |
+| `log` | `project`, `job_id`, `tail_lines` (default 200, capped by `max_log_lines`), or `search` (regex, at most 200 characters, no repeated groups containing quantifiers or alternations, no backreferences, at most two unbounded quantifiers) with `context` (default 2) and `max_matches` (default 50) | `job`, `log`, `total_lines`, `returned_lines` / `matches`, `truncated`, `redacted`. A search looks at the first 500 characters of each line and stops after 2 seconds, reported as `truncated` with a `note` |
 
 Logs have ANSI colour and GitLab section markers removed and carriage-return progress lines
 collapsed. With `search`, matching lines are prefixed `>` and shown with their line numbers.
@@ -112,7 +112,12 @@ masks). A GET result larger than `max_file_bytes` is returned as clipped text wi
 narrow it with `params`, page with `paginate` and `limit`, or use a typed tool. A path is rejected when
 any percent-decoded segment is `..`, and the deny-lists also match the path with `..` resolved.
 Redirects are never followed: a 3xx from GitLab is reported as an error so the token is not sent to
-another host; set `GITLAB_URL` to the address GitLab redirects to.
+another host; set `GITLAB_URL` to the address GitLab redirects to. `sudo`, `private_token`,
+`access_token`, `oauth_token` and `job_token` are refused in `params` and `body` for every method: a
+call always runs as the configured token and user. Writes a typed tool guards are refused through the
+escape hatch: merging or approving a merge request and creating a commit must go through
+`gitlab_mr_write` / `gitlab_commit`, so `allow_raw_writes` cannot bypass `allow_merge` or the head-sha
+binding. Revoking or rotating the token in use (`personal_access_tokens/self`) is refused too.
 
 ## gitlab_issue_write
 
@@ -141,13 +146,16 @@ push rights on the target branch) for merge.
 | `merge` | `iid`, `sha` (required), `squash`, `should_remove_source_branch`, `merge_commit_message`, `squash_commit_message`, `merge_when_pipeline_succeeds` | `allow_merge` must be on; `sha` re-checked; irreversible |
 | `rebase` | `iid`, `skip_ci` | asynchronous: re-read the MR |
 | `resolve` | `iid`, `discussion_id` (required), `resolved` (default true) | |
+| `cancel_auto_merge` | `iid` | withdraws a pending merge-when-pipeline-succeeds |
 
 `position` takes `new_path` (and `old_path` for renames) plus the line numbers from the `diffs` hunks.
 GitLab needs `new_line` alone for an added line, `old_line` alone for a removed line, and both for
 an unchanged line. Give `new_line` for added and unchanged lines and `old_line` for removed lines;
 the plugin reads the diff, fills in the other side for unchanged lines, and rejects lines that are
 not part of the diff (GitLab would answer 400). Boolean arguments accept true/false, yes/no, on/off
-and 1/0; an empty string means "not given" and anything else is rejected.
+and 1/0; an empty string means "not given" and anything else is rejected. `discussion_id` must be the
+id from a discussions listing (letters and digits); it is part of the URL path, so anything else is
+rejected before a request is built.
 
 ## gitlab_pipeline_write
 

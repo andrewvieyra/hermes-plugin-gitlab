@@ -26,6 +26,7 @@ _HELP = """\
 
 
 def _parse(raw: str) -> List[str]:
+    """Shell-style split of the slash command's argument string; whitespace split when the quoting is broken."""
     try:
         return shlex.split(raw or "")
     except ValueError:
@@ -46,6 +47,7 @@ def _result(text: str) -> str:
 
 
 def _resolve(fragment: str) -> Any:
+    """A staged id from what the operator typed, or the message to show when it is unknown or ambiguous."""
     staged_id, candidates = get_store().resolve(fragment)
     if staged_id is None:
         if not candidates:
@@ -161,6 +163,7 @@ def run(argv: List[str], *, via: str = audit.VIA_SLASH) -> str:
 
 
 def slash_handler(raw_args: str) -> str:
+    """Entry point Hermes calls for ``/gitlab …`` inside a session."""
     return run(_parse(raw_args), via=audit.VIA_SLASH)
 
 
@@ -168,6 +171,7 @@ def slash_handler(raw_args: str) -> str:
 
 
 def setup_cli(parser: Any) -> None:
+    """argparse subcommands for ``hermes gitlab …``."""
     sub = parser.add_subparsers(dest="gitlab_cmd")
     sub.add_parser("status", help="Connectivity, token identity and scopes, write mode")
     p = sub.add_parser("mr", help="Summary of a merge request")
@@ -189,6 +193,7 @@ def setup_cli(parser: Any) -> None:
 
 
 def cli_handler(args: Any) -> None:
+    """Turn the parsed argparse namespace back into argv and run it as the CLI operator path."""
     argv: List[str] = [getattr(args, "gitlab_cmd", None) or "help"]
     for attr in ("project", "iid", "staged_id"):
         value = getattr(args, attr, None)

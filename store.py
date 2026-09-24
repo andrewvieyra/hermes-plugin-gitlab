@@ -37,6 +37,7 @@ def default_staged_dir() -> Path:
 
 
 def now_iso() -> str:
+    """UTC now as ``YYYY-MM-DDTHH:MM:SSZ``."""
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
@@ -47,6 +48,8 @@ def new_id() -> str:
 
 
 class StagedStore:
+    """One JSON file per staged write under a directory, with in-process and cross-process locking."""
+
     claim_timeout: float = 30.0  # seconds to wait for the cross-process lock when claiming
 
     def __init__(self, directory: Optional[Path] = None):
@@ -55,6 +58,7 @@ class StagedStore:
 
     @property
     def lock(self) -> threading.RLock:
+        """The in-process lock, for callers that need to group several operations."""
         return self._lock
 
     @contextlib.contextmanager
@@ -76,6 +80,7 @@ class StagedStore:
 
     @property
     def directory(self) -> Path:
+        """The staged directory, created on first use."""
         if self._dir is None:
             self._dir = default_staged_dir()
         self._dir.mkdir(parents=True, exist_ok=True)
@@ -116,6 +121,7 @@ class StagedStore:
             os.replace(tmp, path)
 
     def load(self, staged_id: str) -> Optional[Dict[str, Any]]:
+        """The document for *staged_id*, or ``None`` when there is none (or the id is malformed)."""
         with self._lock:
             try:
                 path = self._path(staged_id)
@@ -126,6 +132,7 @@ class StagedStore:
             return json.loads(path.read_text(encoding="utf-8"))
 
     def list(self, status: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]:
+        """Documents newest first, optionally only those with *status*."""
         with self._lock:
             docs: List[Dict[str, Any]] = []
             for path in self.directory.glob(f"{PREFIX}-*.json"):
@@ -184,6 +191,7 @@ class StagedStore:
         return removed
 
     def delete(self, staged_id: str) -> bool:
+        """Remove a document; ``True`` when it existed."""
         with self._lock:
             path = self._path(staged_id)
             if path.exists():
@@ -193,6 +201,7 @@ class StagedStore:
 
 
 def _acquire(fd: int, timeout: float) -> None:
+    """Blocking advisory lock with a deadline: ``fcntl.flock``, or ``msvcrt.locking`` on Windows."""
     try:
         import fcntl
     except ImportError:  # Windows: msvcrt byte-range lock
@@ -219,6 +228,7 @@ def _acquire(fd: int, timeout: float) -> None:
 
 
 def _release(fd: int) -> None:
+    """Release the advisory lock taken by :func:`_acquire`."""
     try:
         import fcntl
 
@@ -235,6 +245,7 @@ _store_lock = threading.Lock()
 
 
 def get_store() -> StagedStore:
+    """The process-wide store, created lazily under the plugin's data directory."""
     global _store
     with _store_lock:
         if _store is None:

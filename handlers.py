@@ -19,7 +19,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from . import audit, executor, render, targets, writes
-from .client import GitLabClient, GitLabError, encode, is_configured, validate_path
+from .client import GitLabClient, GitLabError, encode, is_configured, scrub_env, validate_path
 from .executor import WriteError
 from .settings import get_settings
 from .store import get_store
@@ -44,6 +44,7 @@ ISSUE_ACTIONS = ("list", "get")
 MR_ACTIONS = ("list", "get", "diffs", "discussions", "commits", "pipelines")
 PIPELINE_ACTIONS = ("list", "get", "jobs", "job", "log")
 TOKEN_EXPIRY_WARNING_DAYS = 14
+MAX_SEARCH_PATTERN_CHARS = 200  # a job-log regex from the model; long patterns are where backtracking blows up
 
 
 def set_client_factory(factory: Optional[Callable[[], GitLabClient]]) -> None:
@@ -66,18 +67,22 @@ def check_write_requirements() -> bool:
 
 
 def _json(payload: Dict[str, Any]) -> str:
+    """Serialise a tool result; every handler returns one JSON string."""
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
 def _ok(**payload: Any) -> str:
+    """Success envelope."""
     return _json({"success": True, **payload})
 
 
 def _fail(message: str, **extra: Any) -> str:
+    """Error envelope; extra keys (``refused``, ``rejected``, ``conflict``, ``status``) qualify the failure."""
     return _json({"success": False, "error": message, **extra})
 
 
 def _int(value: Any, default: int, *, minimum: int = 1, maximum: Optional[int] = None) -> int:
+    """Integer argument with a default, a floor and an optional cap; junk falls back to the default."""
     try:
         number = int(value)
     except (TypeError, ValueError):
@@ -100,12 +105,14 @@ def _actor_from(kwargs: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _gitlab_url() -> Optional[str]:
+    """The configured base URL for audit events, or ``None`` when no client can be built."""
     with contextlib.suppress(Exception):
         return _client_factory().base_url
     return None
 
 
 def _audit_read(name: str, args: Dict[str, Any], kwargs: Dict[str, Any], out: str) -> None:
+    """Emit ``read_done`` / ``read_failed`` for a read tool call when ``audit_reads`` is on."""
     if not get_settings().audit_reads:
         return
     if name == "gitlab_api" and str(args.get("method") or "GET").strip().upper() != "GET":
@@ -139,6 +146,7 @@ def tool(name: str, *, read: bool = True) -> Callable[[Callable[..., str]], Call
                 out = _fail(str(exc), status=exc.status or None, gitlab=exc.to_dict())
             except Exception as exc:  # never let a handler raise into the agent loop
                 out = _fail(f"{type(exc).__name__}: {exc}")
+            out = scrub_env(out)  # the plugin's own token never reaches the model, whatever else is configured
             if read:
                 _audit_read(name, args, kwargs, out)
             return out
@@ -149,12 +157,14 @@ def tool(name: str, *, read: bool = True) -> Callable[[Callable[..., str]], Call
 
 
 def _project(client: GitLabClient, args: Dict[str, Any], *, required: bool = True) -> Optional[str]:
+    """The ``project`` argument normalised (id, path or URL); may be omitted for cross-project lists."""
     if args.get("project") in (None, "") and not required:
         return None
     return targets.project_arg(args.get("project"), client.base_url)
 
 
 def _action(args: Dict[str, Any], allowed: tuple, default: Optional[str] = None) -> str:
+    """The ``action`` argument validated against *allowed*."""
     action = str(args.get("action") or default or "").strip().lower()
     if action not in allowed:
         raise GitLabError(f"action must be one of {', '.join(allowed)} (got {action!r})")
@@ -162,22 +172,26 @@ def _action(args: Dict[str, Any], allowed: tuple, default: Optional[str] = None)
 
 
 def _limit(args: Dict[str, Any], default: int) -> int:
+    """The ``limit`` argument, capped by ``max_results``."""
     return _int(args.get("limit"), default, maximum=get_settings().max_results)
 
 
 def _pass(params: Dict[str, Any], args: Dict[str, Any], *keys: str) -> None:
+    """Copy the named arguments into query *params* when the model gave them."""
     for key in keys:
         if args.get(key) not in (None, ""):
             params[key] = args[key]
 
 
 def _redact_content(text: str) -> tuple:
+    """Secret redaction for file and log text, honouring ``redact_secrets``."""
     if get_settings().redact_secrets:
         return render.redact_content(text)
     return text, 0
 
 
 def _content_redactor() -> Optional[Callable[[str], tuple]]:
+    """The redaction callable for diff rendering, or ``None`` when redaction is off."""
     return render.redact_content if get_settings().redact_secrets else None
 
 
@@ -286,6 +300,7 @@ def _scan_discussions(
 
 
 def status(client: GitLabClient) -> Dict[str, Any]:
+    """``path: status``: GitLab version, the token's identity, scopes and expiry warnings, and the plugin's public settings."""
     settings = get_settings()
     version = client.version()
     me = client.current_user()
@@ -332,6 +347,7 @@ def status(client: GitLabClient) -> Dict[str, Any]:
 
 @tool("gitlab_search")
 def gitlab_search(args: Dict[str, Any], **_: Any) -> str:
+    """``gitlab_search``: projects by name, or one of GitLab's search scopes for free text."""
     client = _client_factory()
     scope = str(args.get("scope") or "projects").strip().lower()
     if scope not in SEARCH_SCOPES:
@@ -356,13 +372,15 @@ def gitlab_search(args: Dict[str, Any], **_: Any) -> str:
         if archived is not None:
             params["archived"] = archived
         rows, total, truncated = client.paginate(path, params, max_results=limit)
+        results, redacted = _redact_user_text([render.project(r) for r in rows])
         return _ok(
             scope=scope,
             query=query,
             count=total,
             returned=len(rows),
             truncated=truncated,
-            results=[render.project(r) for r in rows],
+            redacted=redacted,
+            results=results,
         )
     params = {"scope": scope, "search": query}
     _pass(params, args, "state", "ref", "order_by", "sort")
@@ -401,6 +419,7 @@ def gitlab_search(args: Dict[str, Any], **_: Any) -> str:
 
 @tool("gitlab_repo")
 def gitlab_repo(args: Dict[str, Any], **_: Any) -> str:
+    """``gitlab_repo``: project metadata, tree, file, commits, one commit with its diff, compare, branches, tags."""
     client = _client_factory()
     settings = get_settings()
     action = _action(args, REPO_ACTIONS)
@@ -543,23 +562,25 @@ def gitlab_repo(args: Dict[str, Any], **_: Any) -> str:
         params = {}
         _pass(params, args, "search")
         rows, total, truncated = client.paginate(f"{base}/repository/branches", params, max_results=_limit(args, 50))
+        branches, redacted = _redact_user_text([render.branch(r) for r in rows])
         return _ok(
             project=project,
             count=total,
             returned=len(rows),
             truncated=truncated,
-            branches=[render.branch(r) for r in rows],
+            redacted=redacted,
+            branches=branches,
         )
     params = {}
     _pass(params, args, "search", "order_by", "sort")
     rows, total, truncated = client.paginate(f"{base}/repository/tags", params, max_results=_limit(args, 50))
-    return _ok(
-        project=project, count=total, returned=len(rows), truncated=truncated, tags=[render.tag(r) for r in rows]
-    )
+    tags, redacted = _redact_user_text([render.tag(r) for r in rows])
+    return _ok(project=project, count=total, returned=len(rows), truncated=truncated, redacted=redacted, tags=tags)
 
 
 @tool("gitlab_issues")
 def gitlab_issues(args: Dict[str, Any], **_: Any) -> str:
+    """``gitlab_issues``: filtered issue lists, or one issue with its discussions, related MRs and links."""
     client = _client_factory()
     action = _action(args, ISSUE_ACTIONS, default="list")
     if action == "get":
@@ -640,6 +661,7 @@ def gitlab_issues(args: Dict[str, Any], **_: Any) -> str:
 
 @tool("gitlab_merge_requests")
 def gitlab_merge_requests(args: Dict[str, Any], **_: Any) -> str:
+    """``gitlab_merge_requests``: filtered MR lists, or one MR with approvals, diffs, discussions, commits, pipelines."""
     client = _client_factory()
     action = _action(args, MR_ACTIONS, default="list")
     if action == "list":
@@ -705,12 +727,18 @@ def gitlab_merge_requests(args: Dict[str, Any], **_: Any) -> str:
         approvals = None
         with contextlib.suppress(GitLabError):
             approvals = render.approvals(client.get(f"{base}/approvals"))
+        closes: List[Dict[str, Any]] = []
+        with contextlib.suppress(GitLabError):  # issues this MR closes ("Closes #12" in its description)
+            rows_c, _tc, _uc = client.paginate(f"{base}/closes_issues", max_results=20)
+            closes = [render.issue(row) for row in rows_c if isinstance(row, dict)]
         merge_request, redacted = _redact_user_text(render.merge_request(body, full=True))
+        closes, redacted_c = _redact_user_text(closes)
         return _ok(
             project=project,
             merge_request=merge_request,
             approvals=approvals,
-            redacted=redacted,
+            closes_issues=closes,
+            redacted=redacted + redacted_c,
             next_steps="Use action=diffs to read the change, action=discussions for review threads, and action=pipelines for CI. Pass sha to gitlab_mr_write for approve/merge.",
         )
     if action == "diffs":
@@ -751,6 +779,7 @@ def gitlab_merge_requests(args: Dict[str, Any], **_: Any) -> str:
 
 @tool("gitlab_pipelines")
 def gitlab_pipelines(args: Dict[str, Any], **_: Any) -> str:
+    """``gitlab_pipelines``: pipelines, one pipeline with jobs and failures, jobs, one job, or a job log."""
     client = _client_factory()
     settings = get_settings()
     action = _action(args, PIPELINE_ACTIONS, default="list")
@@ -772,6 +801,7 @@ def gitlab_pipelines(args: Dict[str, Any], **_: Any) -> str:
             "sha",
             "source",
             "username",
+            "name",
             "order_by",
             "sort",
             "updated_after",
@@ -840,22 +870,34 @@ def gitlab_pipelines(args: Dict[str, Any], **_: Any) -> str:
     if settings.redact_secrets:
         text, redacted = render.redact_log(text)
     search = str(args.get("search") or "").strip()
+    if len(search) > MAX_SEARCH_PATTERN_CHARS:
+        return _fail(f"search pattern is longer than {MAX_SEARCH_PATTERN_CHARS} characters")
+    risk = render.regex_risk(search) if search else None
+    if risk:
+        return _fail(f"search pattern refused: {risk}. Use a simpler pattern or plain words")
     if search:
-        snippet, total_lines, matches = render.search_lines(
+        snippet, total_lines, matches, stopped = render.search_lines(
             text,
             search,
             context=_int(args.get("context"), 2, minimum=0, maximum=20),
             max_matches=_int(args.get("max_matches"), 50, maximum=500),
         )
-        return _ok(
-            project=project,
-            job=render.job(job),
-            total_lines=total_lines,
-            matches=matches,
-            search=search,
-            redacted=redacted,
-            log=snippet,
-        )
+        out: Dict[str, Any] = {
+            "project": project,
+            "job": render.job(job),
+            "total_lines": total_lines,
+            "matches": matches,
+            "search": search,
+            "redacted": redacted,
+            "truncated": stopped,
+            "log": snippet,
+        }
+        if stopped:
+            out["note"] = (
+                f"the search stopped after {render.SEARCH_BUDGET_SECONDS:g} s and did not reach every line; "
+                "use a simpler pattern, or tail_lines"
+            )
+        return _ok(**out)
     count = _int(args.get("tail_lines"), min(200, settings.max_log_lines), maximum=settings.max_log_lines)
     lines, total_lines = render.tail_lines(text, count)
     return _ok(
@@ -871,6 +913,7 @@ def gitlab_pipelines(args: Dict[str, Any], **_: Any) -> str:
 
 @tool("gitlab_api")
 def gitlab_api(args: Dict[str, Any], **kwargs: Any) -> str:
+    """``gitlab_api``: any endpoint. ``status`` is virtual; GET is deny-listed only; other methods pass the write gate."""
     client = _client_factory()
     method = str(args.get("method") or "GET").strip().upper()
     raw_path = str(args.get("path") or "").strip()
@@ -892,6 +935,18 @@ def gitlab_api(args: Dict[str, Any], **kwargs: Any) -> str:
         )
         return _fail(refusal, refused=True)
     params = args.get("params") if isinstance(args.get("params"), dict) else {}
+    override = executor.auth_override(params, None)
+    if override:
+        audit.emit(
+            "write_refused",
+            actor=_actor_from(kwargs),
+            gitlab_url=client.base_url,
+            action="api.GET",
+            project=targets.project_from_path(path),
+            target={"kind": "raw", "path": path},
+            reason=override,
+        )
+        return _fail(override, refused=True)
     settings = get_settings()
     if _flag(args, "paginate", False):
         rows, total, truncated = client.paginate(path, params, max_results=_limit(args, 100))
@@ -963,6 +1018,7 @@ def _maybe_prune(actor: Dict[str, Any]) -> None:
 def _write(
     tool_name: str, builder: Callable[..., executor.WriteRequest], args: Dict[str, Any], kwargs: Dict[str, Any]
 ) -> str:
+    """Common path of the write tools: build the request, hand it to the gate, audit anything rejected on the way."""
     client = _client_factory()
     settings = get_settings()
     actor = _actor_from(kwargs)
@@ -1007,27 +1063,33 @@ def _write(
     result = executor.perform(
         client, req, actor=actor, settings=settings, store=get_store(), dry_run=_flag(args, "dry_run", False)
     )
+    if isinstance(result.get("result"), (dict, list)):  # GitLab's response carries other people's text too
+        result["result"], _n = _redact_user_text(result["result"])
     _maybe_prune(actor)
     return _json(result)
 
 
 @tool("gitlab_issue_write", read=False)
 def gitlab_issue_write(args: Dict[str, Any], **kwargs: Any) -> str:
+    """``gitlab_issue_write``: create, update or comment on an issue through the gate."""
     return _write("gitlab_issue_write", writes.issue, args, kwargs)
 
 
 @tool("gitlab_mr_write", read=False)
 def gitlab_mr_write(args: Dict[str, Any], **kwargs: Any) -> str:
+    """``gitlab_mr_write``: create, update, comment, approve, merge, rebase, resolve or cancel auto-merge through the gate."""
     return _write("gitlab_mr_write", writes.merge_request, args, kwargs)
 
 
 @tool("gitlab_pipeline_write", read=False)
 def gitlab_pipeline_write(args: Dict[str, Any], **kwargs: Any) -> str:
+    """``gitlab_pipeline_write``: run, retry, cancel or play through the gate."""
     return _write("gitlab_pipeline_write", writes.pipeline, args, kwargs)
 
 
 @tool("gitlab_commit", read=False)
 def gitlab_commit(args: Dict[str, Any], **kwargs: Any) -> str:
+    """``gitlab_commit``: one atomic commit, or a bare branch creation, through the gate."""
     return _write("gitlab_commit", writes.commit, args, kwargs)
 
 
@@ -1035,16 +1097,19 @@ def gitlab_commit(args: Dict[str, Any], **kwargs: Any) -> str:
 
 
 def run_staged(staged_id: str, actor: Dict[str, Any]) -> Dict[str, Any]:
+    """Operator entry point: execute a staged write under the cross-process lock."""
     client = _client_factory()
     return executor.run_staged(client, staged_id, actor=actor, settings=get_settings(), store=get_store())
 
 
 def drop_staged(staged_id: str, actor: Dict[str, Any]) -> Dict[str, Any]:
+    """Operator entry point: discard a staged (or stuck ``running``) write."""
     client = _client_factory()
     return executor.drop_staged(client, staged_id, actor=actor, store=get_store())
 
 
 def list_staged(status_filter: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+    """Rows for ``/gitlab pending``: id, status, expiry flag, action, project, summary, requester."""
     docs = get_store().list(status=status_filter, limit=limit)
     out = []
     for doc in docs:

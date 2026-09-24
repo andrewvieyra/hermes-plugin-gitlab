@@ -14,6 +14,10 @@ All notable changes to this project are documented here. The format follows
 - `gitlab_pipelines` `get` lists trigger jobs with their downstream pipelines (`bridges`); `gitlab_issues`
   `get` lists `linked_issues`.
 - Commit previews clip each file's content to 200 characters so a dry run does not echo a large commit back.
+- `gitlab_mr_write` `action=cancel_auto_merge`; `gitlab_merge_requests` `get` lists `closes_issues`;
+  `gitlab_pipelines` `list` takes `name`.
+- `docs/api-coverage.md`: the GitLab REST API endpoint by endpoint, with the tool and action that covers it,
+  what the escape hatch reaches, and what is refused.
 
 ### Security
 - Redirects are never followed: a 3xx from GitLab is an error, so `PRIVATE-TOKEN` cannot be sent to another host.
@@ -25,6 +29,24 @@ All notable changes to this project are documented here. The format follows
   results larger than `max_file_bytes` are clipped.
 - Secret redaction covers routable GitLab tokens (with `.` segments), legacy runner registration tokens
   and OpenAI/Anthropic, Stripe, Google, npm, Hugging Face and PyPI token formats.
+- `discussion_id` is validated (letters and digits only) before it is interpolated into a URL: with a
+  normalising reverse proxy, `../merge?sha=…` on `resolve` could otherwise have merged without `allow_merge`.
+- `sudo`, `private_token`, `access_token`, `oauth_token` and `job_token` are refused in raw params and bodies,
+  so a call always runs as the configured token and user.
+- More refused surfaces: `trigger`, single `pipeline_schedules/:id` (lists its variables), error-tracking
+  `client_keys`, project and group `audit_events` for every method; `fork`, issue `move`/`clone`,
+  `access_requests`, `invitations`, `billable_members`, `job_token_scope`, `pages`, `protect`/`unprotect`,
+  `reset_approvals` and project transfer for non-GET.
+- The plugin's own token is scrubbed from every tool result regardless of `redact_secrets`; the user's
+  triggering message is redacted before it is recorded in the audit trail; project search results, branch and
+  tag listings and typed write responses go through user-text redaction too.
+- Job-log `search` patterns are capped at 200 characters and refused when they could backtrack exponentially
+  or cubically (a repeated group containing a quantifier or an alternation, backreferences, counted repeats
+  above 100, more than two unbounded quantifiers), searched within the first 500 characters of each line under
+  a 2-second budget that is reported when it runs out; `/gitlab audit` lines cannot be broken by newlines.
+- Raw `gitlab_api` writes to `merge_requests/:iid/merge`, `.../approve` and `repository/commits` are refused
+  and point at the typed tool: `allow_raw_writes` alone could otherwise merge without `allow_merge` or a
+  head-sha check. `DELETE` / rotate on `personal_access_tokens/self` is refused.
 
 ### Fixed
 - Diff comments on renamed files send the file's real `old_path` instead of repeating `new_path`.

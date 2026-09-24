@@ -136,17 +136,34 @@ opportunistic sweep and on `/gitlab prune`.
 ## Deny-lists for `gitlab_api`
 
 Sensitive, every method (their responses carry secrets or their state is credentials):
-`variables`, `deploy_tokens`, `access_tokens`, `deploy_keys`, `hooks`, `triggers`, `tokens`,
-`secure_files`, `integrations`, `services`, `export`/`import`, `personal_access_tokens` (except
-`/self`), `user/keys` and similar, `application/*`, `admin/*`, `broadcast_messages`, `license`,
-`sidekiq`, `system_hooks`, `keys`, `geo`, `audit_events`.
+`variables`, `deploy_tokens`, `access_tokens`, `deploy_keys`, `hooks`, `triggers`, `trigger`
+(runs a pipeline with a trigger token), `tokens`, one pipeline schedule (`pipeline_schedules/:id`,
+whose record lists its variables with values), error-tracking `client_keys`, `secure_files`,
+`integrations`, `services`, `export`/`import`, `personal_access_tokens` (except `/self`), `user/keys`
+and similar, `application/*`, `admin/*`, `broadcast_messages`, `license`, `sidekiq`, `system_hooks`,
+`keys`, `geo`, `audit_events`.
 
 Administrative, non-GET (a human with the right role should do these in the UI): `users`, a project
 or group itself (`projects/:id`, `groups/:id`) and creating one (`POST projects`, `POST groups`),
 `members`, `share`, `protected_*`, `approval_rules`, project approval settings, `runners`,
 `transfer`/`archive`/`unarchive`/`restore`, mirrors, push rules, housekeeping, `merged_branches`
-(deletes every merged branch), LDAP and SAML group links, `namespaces`, `topics`, `applications`,
-`oauth`.
+(deletes every merged branch), LDAP and SAML group links, `access_requests`, `invitations`,
+`billable_members`, `job_token_scope`, `pages`, legacy `protect`/`unprotect`, `reset_approvals`,
+`fork` (creates a project in another namespace), issue `move`/`clone` (into a project the allow-list
+never saw), `groups/:id/projects/:id` (transfer), `namespaces`, `topics`, `applications`, `oauth`.
+
+Authentication parameters are refused for every raw call, GET included: `sudo` (impersonation with
+an admin token) and `private_token`, `access_token`, `oauth_token`, `job_token` (a credential the
+model supplies) in `params` or `body`. The typed tools only forward whitelisted keys, so the same
+override cannot be smuggled through them. Every model-supplied value that reaches a URL is either
+percent-encoded (project paths, branch and file names, shas), an integer (iids, ids) or validated
+against a strict alphabet (discussion ids), so no argument can add a path segment or a query string.
+
+Typed-only, non-GET: the writes a typed tool guards with a precondition or an extra flag are refused
+through `gitlab_api` and the refusal names the tool to use: `merge_requests/:iid/merge` and
+`.../approve` (`gitlab_mr_write`, head sha and `allow_merge`) and `repository/commits`
+(`gitlab_commit`, validated actions and `expected_head_sha`). Without this, `allow_raw_writes` alone
+would merge. `personal_access_tokens/self` is readable for `status` but cannot be revoked or rotated.
 
 The lists are regular expressions in `executor.py`; a refusal names the surface. They are matched
 against every spelling GitLab could resolve the path to: as given, percent-decoded (repeatedly, for

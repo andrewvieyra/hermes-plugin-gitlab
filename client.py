@@ -37,6 +37,7 @@ class GitLabError(Exception):
         return {}
 
     def to_dict(self) -> Dict[str, Any]:
+        """Structured form for tool results: ``message``, ``status``, ``method``, ``path`` and a scrubbed ``body``."""
         body = self.body
         if not isinstance(body, (dict, list)):
             body = str(body)[:500] if body else None
@@ -106,7 +107,20 @@ def settings_from_env(env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     return {"url": url, "token": token, "verify": verify_from_env(env.get("GITLAB_VERIFY_SSL")), "timeout": timeout}
 
 
+def scrub_env(text: str, env: Optional[Dict[str, str]] = None) -> str:
+    """Defence in depth for tool results: replace the configured token wherever it appears in *text*,
+    whatever ``redact_secrets`` says. Reads the environment directly so it needs no client or session."""
+    env = os.environ if env is None else env
+    token = (env.get("GITLAB_TOKEN") or "").strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    if len(token) >= 8 and token in text:
+        return text.replace(token, "***")
+    return text
+
+
 def is_configured(env: Optional[Dict[str, str]] = None) -> bool:
+    """``True`` when ``GITLAB_URL`` and ``GITLAB_TOKEN`` are usable (the tools' ``check_fn``)."""
     try:
         settings_from_env(env)
         return True
@@ -196,6 +210,7 @@ class GitLabClient:
 
     @classmethod
     def from_env(cls, env: Optional[Dict[str, str]] = None, session: Any = None) -> GitLabClient:
+        """A client from ``GITLAB_URL``, ``GITLAB_TOKEN``, ``GITLAB_VERIFY_SSL`` and ``GITLAB_TIMEOUT``."""
         s = settings_from_env(env)
         return cls(s["url"], s["token"], verify=s["verify"], timeout=s["timeout"], session=session)
 
@@ -295,6 +310,7 @@ class GitLabClient:
         return body
 
     def get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
+        """``GET`` *path* with optional query *params*; returns the parsed body."""
         return self.request("GET", path, params=params)
 
     def paginate(
@@ -337,10 +353,12 @@ class GitLabClient:
 
     # -- convenience --------------------------------------------------------------------------
     def version(self) -> Dict[str, Any]:
+        """``GET /version``: ``version``, ``revision`` and, on 16+, ``enterprise``."""
         body = self.get("version")
         return body if isinstance(body, dict) else {}
 
     def current_user(self) -> Dict[str, Any]:
+        """``GET /user``: the account the token belongs to."""
         body = self.get("user")
         return body if isinstance(body, dict) else {}
 
@@ -356,12 +374,14 @@ class GitLabClient:
         return body if isinstance(body, dict) else None
 
     def project(self, project: Any) -> Dict[str, Any]:
+        """``GET /projects/:id`` by numeric id or ``group/project`` path."""
         body = self.get(f"projects/{project_id(project)}")
         if not isinstance(body, dict):
             raise GitLabError("GET project did not return an object")
         return body
 
     def user_by_username(self, username: str) -> Optional[Dict[str, Any]]:
+        """Exact lookup through ``GET /users?username=``; ``None`` when nobody matches."""
         body = self.get("users", {"username": username.strip().lstrip("@")})
         if isinstance(body, list) and body and isinstance(body[0], dict):
             return body[0]

@@ -13,11 +13,11 @@ from typing import Any, Dict, List, Optional
 
 from . import render, targets
 from .client import GitLabClient, GitLabError
-from .executor import WriteError, WriteRequest
+from .executor import WriteError, WriteRequest, auth_override
 from .settings import Settings
 
 ISSUE_ACTIONS = ("create", "update", "comment")
-MR_ACTIONS = ("create", "update", "comment", "approve", "unapprove", "merge", "rebase", "resolve")
+MR_ACTIONS = ("create", "update", "comment", "approve", "unapprove", "merge", "rebase", "resolve", "cancel_auto_merge")
 PIPELINE_ACTIONS = ("run", "retry", "cancel", "play")
 COMMIT_ACTIONS = ("create", "update", "delete", "move", "chmod")
 ISSUE_TYPES = ("issue", "incident", "test_case", "task")
@@ -26,6 +26,7 @@ RAW_METHODS = ("POST", "PUT", "PATCH", "DELETE")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
 _VAR_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_DISCUSSION_ID_RE = re.compile(r"^[A-Za-z0-9]{6,64}$")
 MAX_COMMIT_ACTIONS = 100
 MAX_COMMIT_BYTES = 2_000_000
 
@@ -34,6 +35,7 @@ MAX_COMMIT_BYTES = 2_000_000
 
 
 def _project(client: GitLabClient, args: Dict[str, Any]) -> str:
+    """The ``project`` argument normalised; a bad value is a rejection, not a lookup failure."""
     try:
         return targets.project_arg(args.get("project"), client.base_url)
     except GitLabError as exc:
@@ -41,6 +43,7 @@ def _project(client: GitLabClient, args: Dict[str, Any]) -> str:
 
 
 def _action(args: Dict[str, Any], allowed: tuple) -> str:
+    """The ``action`` argument validated against *allowed*."""
     action = str(args.get("action") or "").strip().lower()
     if action not in allowed:
         raise WriteError(f"action must be one of {', '.join(allowed)} (got {action!r})", field="action")
@@ -48,6 +51,7 @@ def _action(args: Dict[str, Any], allowed: tuple) -> str:
 
 
 def _iid(args: Dict[str, Any], name: str = "iid") -> int:
+    """The ``iid`` (or another id argument) as a positive int."""
     try:
         return targets.positive_int(args.get(name), name)
     except GitLabError as exc:
@@ -55,6 +59,7 @@ def _iid(args: Dict[str, Any], name: str = "iid") -> int:
 
 
 def _text(args: Dict[str, Any], key: str, *, required: bool = False, limit: int = 1_000_000) -> Optional[str]:
+    """A string argument: ``None`` when absent or blank, an error when longer than *limit*."""
     value = args.get(key)
     if value is None or (isinstance(value, str) and not value.strip()):
         if required:
@@ -83,6 +88,7 @@ def _set_flag(payload: Dict[str, Any], args: Dict[str, Any], key: str, param: Op
 
 
 def _date(args: Dict[str, Any], key: str) -> Optional[str]:
+    """A ``YYYY-MM-DD`` argument, or ``None``."""
     value = args.get(key)
     if value is None or value == "":
         return None
@@ -92,6 +98,7 @@ def _date(args: Dict[str, Any], key: str) -> Optional[str]:
 
 
 def _sha(args: Dict[str, Any], key: str, *, required: bool = False) -> Optional[str]:
+    """A commit sha argument (7 to 64 hex characters), or ``None``."""
     value = args.get(key)
     if value is None or value == "":
         if required:
@@ -101,6 +108,23 @@ def _sha(args: Dict[str, Any], key: str, *, required: bool = False) -> Optional[
     if not _SHA_RE.match(text):
         raise WriteError(f"{key} must be a commit sha (7 to 40 hex characters, got {text!r})", field=key)
     return text
+
+
+def _discussion_id(args: Dict[str, Any], *, required: bool = False) -> Optional[str]:
+    """A discussion id is the hex digest GitLab issued for the thread. It is interpolated into a URL
+    path, so anything else (a slash, ``..``, ``?``, ``#``, a percent sign) is rejected before a request is
+    built: with a normalising proxy ``../merge?sha=…`` would otherwise turn ``resolve`` into a merge."""
+    value = _text(args, "discussion_id")
+    if value is None:
+        if required:
+            raise WriteError("discussion_id is required", field="discussion_id")
+        return None
+    value = value.strip()
+    if not _DISCUSSION_ID_RE.match(value):
+        raise WriteError(
+            "discussion_id must be the id from a discussions listing (letters and digits only)", field="discussion_id"
+        )
+    return value
 
 
 def _user_ids(client: GitLabClient, names: Any, field: str) -> Optional[List[int]]:
@@ -138,6 +162,7 @@ def _milestone_id(client: GitLabClient, project: str, title: Any) -> Optional[in
 
 
 def _labels_into(payload: Dict[str, Any], args: Dict[str, Any]) -> None:
+    """Copy ``labels`` / ``add_labels`` / ``remove_labels`` into the payload as comma-separated strings."""
     for key in ("labels", "add_labels", "remove_labels"):
         if args.get(key) is not None:
             value = targets.labels_arg(args[key])
@@ -145,6 +170,7 @@ def _labels_into(payload: Dict[str, Any], args: Dict[str, Any]) -> None:
 
 
 def _target(kind: str, iid: Optional[int] = None, web_url: Optional[str] = None, **extra: Any) -> Dict[str, Any]:
+    """The ``target`` record for audit events: kind, iid, web URL and any extra identifiers."""
     out: Dict[str, Any] = {"kind": kind}
     if iid is not None:
         out["iid"] = iid
@@ -168,6 +194,7 @@ def _expand_sha(client: GitLabClient, project: str, iid: int, sha: Optional[str]
 
 
 def issue(client: GitLabClient, args: Dict[str, Any], settings: Settings) -> WriteRequest:
+    """``gitlab_issue_write`` builder: dispatch on ``action``."""
     action = _action(args, ISSUE_ACTIONS)
     project = _project(client, args)
     if action == "create":
@@ -178,6 +205,7 @@ def issue(client: GitLabClient, args: Dict[str, Any], settings: Settings) -> Wri
 
 
 def _issue_create(client: GitLabClient, project: str, args: Dict[str, Any]) -> WriteRequest:
+    """``POST /projects/:id/issues``."""
     title = _text(args, "title", required=True, limit=255)
     payload: Dict[str, Any] = {"title": title}
     description = _text(args, "description")
@@ -212,6 +240,7 @@ def _issue_create(client: GitLabClient, project: str, args: Dict[str, Any]) -> W
 
 
 def _issue_update(client: GitLabClient, project: str, args: Dict[str, Any]) -> WriteRequest:
+    """``PUT /projects/:id/issues/:iid`` with only the fields the model gave."""
     iid = _iid(args)
     payload: Dict[str, Any] = {}
     for key, limit in (("title", 255), ("description", 1_000_000)):
@@ -253,9 +282,10 @@ def _issue_update(client: GitLabClient, project: str, args: Dict[str, Any]) -> W
 
 
 def _issue_comment(client: GitLabClient, project: str, args: Dict[str, Any]) -> WriteRequest:
+    """``POST .../issues/:iid/notes`` or a reply in a discussion."""
     iid = _iid(args)
     body = _text(args, "body", required=True)
-    discussion_id = _text(args, "discussion_id")
+    discussion_id = _discussion_id(args)
     payload: Dict[str, Any] = {"body": body}
     web_url = f"{client.base_url}/{project}/-/issues/{iid}" if not project.isdigit() else None
     if discussion_id:
@@ -286,6 +316,7 @@ def _issue_comment(client: GitLabClient, project: str, args: Dict[str, Any]) -> 
 
 
 def merge_request(client: GitLabClient, args: Dict[str, Any], settings: Settings) -> WriteRequest:
+    """``gitlab_mr_write`` builder: dispatch on ``action``."""
     action = _action(args, MR_ACTIONS)
     project = _project(client, args)
     builder = {
@@ -297,11 +328,13 @@ def merge_request(client: GitLabClient, args: Dict[str, Any], settings: Settings
         "merge": _mr_merge,
         "rebase": _mr_rebase,
         "resolve": _mr_resolve,
+        "cancel_auto_merge": _mr_cancel_auto_merge,
     }[action]
     return builder(client, project, args)
 
 
 def _draft_title(title: str, draft: Optional[bool]) -> str:
+    """Add or remove the ``Draft:`` prefix as GitLab expects (there is no draft field on the API)."""
     is_draft = bool(re.match(r"^\s*(\[draft\]|draft:|\(draft\))", title, re.IGNORECASE))
     if draft is True and not is_draft:
         return f"Draft: {title}"
@@ -311,10 +344,12 @@ def _draft_title(title: str, draft: Optional[bool]) -> str:
 
 
 def _mr_web_url(client: GitLabClient, project: str, iid: int) -> Optional[str]:
+    """The MR's web URL when the project is given as a path (for reports and note anchors)."""
     return f"{client.base_url}/{project}/-/merge_requests/{iid}" if not project.isdigit() else None
 
 
 def _mr_create(client: GitLabClient, project: str, args: Dict[str, Any]) -> WriteRequest:
+    """``POST /projects/:id/merge_requests``; the target defaults to the project's default branch."""
     source = _text(args, "source_branch", required=True, limit=255)
     target_branch = _text(args, "target_branch", limit=255)
     if not target_branch:
@@ -349,6 +384,7 @@ def _mr_create(client: GitLabClient, project: str, args: Dict[str, Any]) -> Writ
 
 
 def _mr_update(client: GitLabClient, project: str, args: Dict[str, Any]) -> WriteRequest:
+    """``PUT /projects/:id/merge_requests/:iid`` with only the fields the model gave."""
     iid = _iid(args)
     payload: Dict[str, Any] = {}
     title = _text(args, "title", limit=255)
@@ -391,9 +427,10 @@ def _mr_update(client: GitLabClient, project: str, args: Dict[str, Any]) -> Writ
 
 
 def _mr_comment(client: GitLabClient, project: str, args: Dict[str, Any]) -> WriteRequest:
+    """A note, a reply in a discussion, or a new diff thread bound to the current head."""
     iid = _iid(args)
     body = _text(args, "body", required=True)
-    discussion_id = _text(args, "discussion_id")
+    discussion_id = _discussion_id(args)
     web_url = _mr_web_url(client, project, iid)
     if discussion_id:
         return WriteRequest(
@@ -515,6 +552,7 @@ def _locate_position(
 
 
 def _mr_approve(client: GitLabClient, project: str, args: Dict[str, Any]) -> WriteRequest:
+    """``POST .../approve``, bound to the head sha when one is given."""
     iid = _iid(args)
     sha = _expand_sha(client, project, iid, _sha(args, "sha"))
     pre = [{"kind": "mr_head", "project": project, "iid": iid, "sha": sha}] if sha else []
@@ -537,6 +575,7 @@ def _mr_approve(client: GitLabClient, project: str, args: Dict[str, Any]) -> Wri
 
 
 def _mr_unapprove(client: GitLabClient, project: str, args: Dict[str, Any]) -> WriteRequest:
+    """``POST .../unapprove``."""
     iid = _iid(args)
     return WriteRequest(
         action="mr.unapprove",
@@ -550,6 +589,7 @@ def _mr_unapprove(client: GitLabClient, project: str, args: Dict[str, Any]) -> W
 
 
 def _mr_merge(client: GitLabClient, project: str, args: Dict[str, Any]) -> WriteRequest:
+    """``PUT .../merge``: sha required and re-checked, ``allow_merge`` required, irreversible."""
     iid = _iid(args)
     sha = _sha(args, "sha")
     if not sha:
@@ -585,6 +625,7 @@ def _mr_merge(client: GitLabClient, project: str, args: Dict[str, Any]) -> Write
 
 
 def _mr_rebase(client: GitLabClient, project: str, args: Dict[str, Any]) -> WriteRequest:
+    """``PUT .../rebase`` (asynchronous on GitLab's side)."""
     iid = _iid(args)
     params = {"skip_ci": True} if _flag(args, "skip_ci", False) else None
     return WriteRequest(
@@ -599,9 +640,24 @@ def _mr_rebase(client: GitLabClient, project: str, args: Dict[str, Any]) -> Writ
     )
 
 
-def _mr_resolve(client: GitLabClient, project: str, args: Dict[str, Any]) -> WriteRequest:
+def _mr_cancel_auto_merge(client: GitLabClient, project: str, args: Dict[str, Any]) -> WriteRequest:
+    """``POST .../cancel_merge_when_pipeline_succeeds``: withdraw a pending auto-merge."""
     iid = _iid(args)
-    discussion_id = _text(args, "discussion_id", required=True)
+    return WriteRequest(
+        action="mr.cancel_auto_merge",
+        method="POST",
+        path=f"{targets.p_mr(project, iid)}/cancel_merge_when_pipeline_succeeds",
+        summary=f"Cancel auto-merge of !{iid} in {project}",
+        project=project,
+        target=_target("merge_request", iid, _mr_web_url(client, project, iid)),
+        result_kind="merge_request",
+    )
+
+
+def _mr_resolve(client: GitLabClient, project: str, args: Dict[str, Any]) -> WriteRequest:
+    """``PUT .../discussions/:id`` with ``resolved``."""
+    iid = _iid(args)
+    discussion_id = _discussion_id(args, required=True)
     resolved = _flag(args, "resolved", True)
     return WriteRequest(
         action="mr.resolve",
@@ -619,6 +675,7 @@ def _mr_resolve(client: GitLabClient, project: str, args: Dict[str, Any]) -> Wri
 
 
 def pipeline(client: GitLabClient, args: Dict[str, Any], settings: Settings) -> WriteRequest:
+    """``gitlab_pipeline_write`` builder: run, retry, cancel, play."""
     action = _action(args, PIPELINE_ACTIONS)
     project = _project(client, args)
     if action == "run":
@@ -695,6 +752,7 @@ def pipeline(client: GitLabClient, args: Dict[str, Any], settings: Settings) -> 
 
 
 def _file_path(value: Any, field: str) -> str:
+    """A repository path for a commit action: no empty or ``..`` segments, no backslashes."""
     text = str(value or "").strip().strip("/")
     if not text or any(seg in {"..", ""} for seg in text.split("/")) or "\\" in text:
         raise WriteError(f"{field}: invalid file path {value!r}", field=field)
@@ -702,6 +760,7 @@ def _file_path(value: Any, field: str) -> str:
 
 
 def _branch_lookup(client: GitLabClient, project: str, branch: str) -> Optional[Dict[str, Any]]:
+    """The branch object, or ``None`` when GitLab answers 404."""
     try:
         return client.get(targets.p_branch(project, branch))
     except GitLabError as exc:
@@ -741,6 +800,7 @@ def _branch_create(
 
 
 def commit(client: GitLabClient, args: Dict[str, Any], settings: Settings) -> WriteRequest:
+    """``gitlab_commit`` builder: one atomic commit, or a bare branch creation when ``actions`` is omitted."""
     project = _project(client, args)
     branch = _text(args, "branch", required=True, limit=255)
     raw_actions = args.get("actions")
@@ -837,6 +897,7 @@ def commit(client: GitLabClient, args: Dict[str, Any], settings: Settings) -> Wr
 
 
 def raw(client: GitLabClient, args: Dict[str, Any], settings: Settings) -> WriteRequest:
+    """``gitlab_api`` builder for non-GET calls: validated path, params and body; flags and deny-lists apply in the gate."""
     method = str(args.get("method") or "GET").strip().upper()
     if method not in RAW_METHODS:
         raise WriteError(f"method must be one of {', '.join(RAW_METHODS)} for a write", field="method")
@@ -850,6 +911,9 @@ def raw(client: GitLabClient, args: Dict[str, Any], settings: Settings) -> Write
     body = args.get("body")
     if body is not None and not isinstance(body, (dict, list)):
         raise WriteError("body must be a JSON object or array", field="body")
+    override = auth_override(params, body)
+    if override:
+        raise WriteError(override, field="params")
     requires = ["allow_raw_writes"] + (["allow_raw_delete"] if method == "DELETE" else [])
     return WriteRequest(
         action=f"api.{method}",

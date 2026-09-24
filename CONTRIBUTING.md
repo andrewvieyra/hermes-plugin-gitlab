@@ -11,7 +11,7 @@ third-party product integrations into its core tree, so this is the place for Gi
   anywhere else.
 - A new write action needs: a builder in `writes.py`, its `requires` flags and preconditions, a
   schema entry, a fake-GitLab route, tests for the success, rejection and refusal paths, and a line
-  in `docs/tools.md`.
+  in `docs/tools.md` and the matching row in `docs/api-coverage.md`.
 - Handlers return JSON strings and never raise. Everything the model sees goes through `render`.
 - Match the existing style: type hints, short docstrings explaining *why*, no dead code.
 

@@ -149,6 +149,7 @@ def to_bool(value: Any, name: str, default: Optional[bool] = None) -> Optional[b
 
 
 def optional_int(value: Any, name: str) -> Optional[int]:
+    """A positive int, or ``None`` for ``None`` / ``""``."""
     if value is None or value == "":
         return None
     return positive_int(value, name)
@@ -184,34 +185,42 @@ def matches_allowlist(path_with_namespace: str, patterns: List[str]) -> bool:
 
 
 def p_project(project: Any) -> str:
+    """``projects/:id`` with the id or path encoded."""
     return f"projects/{project_id(project)}"
 
 
 def p_issue(project: Any, iid: int) -> str:
+    """``projects/:id/issues/:iid``."""
     return f"{p_project(project)}/issues/{int(iid)}"
 
 
 def p_mr(project: Any, iid: int) -> str:
+    """``projects/:id/merge_requests/:iid``."""
     return f"{p_project(project)}/merge_requests/{int(iid)}"
 
 
 def p_pipeline(project: Any, pipeline_id: int) -> str:
+    """``projects/:id/pipelines/:pipeline_id``."""
     return f"{p_project(project)}/pipelines/{int(pipeline_id)}"
 
 
 def p_job(project: Any, job_id: int) -> str:
+    """``projects/:id/jobs/:job_id``."""
     return f"{p_project(project)}/jobs/{int(job_id)}"
 
 
 def p_branch(project: Any, name: str) -> str:
+    """``projects/:id/repository/branches/:name`` with the name encoded."""
     return f"{p_project(project)}/repository/branches/{encode(name)}"
 
 
 def p_file(project: Any, path: str) -> str:
+    """``projects/:id/repository/files/:path`` with the path encoded."""
     return f"{p_project(project)}/repository/files/{encode(path.strip('/'))}"
 
 
 def p_commit(project: Any, sha: str) -> str:
+    """``projects/:id/repository/commits/:sha`` with the sha encoded."""
     return f"{p_project(project)}/repository/commits/{encode(sha)}"
 
 

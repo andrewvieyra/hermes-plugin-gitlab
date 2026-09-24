@@ -14,6 +14,8 @@ WRITE_MODES = ("full", "operator_only", "read_only")
 
 @dataclass
 class Settings:
+    """Operator settings with conservative defaults; plugin.yaml carries the descriptions operators see."""
+
     write_mode: str = "full"  # full | operator_only | read_only
     allow_merge: bool = False  # gitlab_mr_write action=merge
     allow_raw_writes: bool = False  # gitlab_api with POST/PUT/PATCH
@@ -49,6 +51,7 @@ class Settings:
         return settings
 
     def to_dict(self) -> Dict[str, Any]:
+        """Every setting, including sink configuration; for tests and diagnostics."""
         return asdict(self)
 
     def public(self) -> Dict[str, Any]:
@@ -67,6 +70,7 @@ class Settings:
 
 
 def coerce(name: str, raw: Any, default: Any) -> Any:
+    """One config value coerced to its default's type, tolerantly: junk falls back to the default."""
     if isinstance(default, bool):
         if isinstance(raw, bool):
             return raw
@@ -99,9 +103,11 @@ _current = Settings()
 
 
 def get_settings() -> Settings:
+    """The process-wide settings."""
     return _current
 
 
 def set_settings(settings: Settings) -> None:
+    """Replace the process-wide settings (registration, tests)."""
     global _current
     _current = settings
