@@ -201,5 +201,23 @@ class Summaries(unittest.TestCase):
         self.assertEqual(render.clip(None, 3), "")
 
 
+class LocalTime(unittest.TestCase):
+    def test_stamps_render_in_the_configured_zone_and_junk_passes_through(self):
+        from zoneinfo import ZoneInfo
+
+        timefmt = submodule("timefmt")
+        original = timefmt.get_zone
+        timefmt.get_zone = lambda: ZoneInfo("America/Los_Angeles")
+        try:
+            self.assertEqual(timefmt.local("2026-09-09T19:35:50Z"), "2026-09-09 12:35:50 PDT")
+            self.assertEqual(timefmt.local("garbage"), "garbage")
+            self.assertEqual(timefmt.local(None), "")
+            self.assertEqual(timefmt.local(12345), 12345)  # a non-string stamp comes back unchanged, not an error
+            line = render.audit_line({"ts": "2026-09-09T19:35:50Z", "event": "write_done", "summary": "s"})
+            self.assertTrue(line.startswith("2026-09-09 12:35:50 PDT"), line)
+        finally:
+            timefmt.get_zone = original
+
+
 if __name__ == "__main__":
     unittest.main()

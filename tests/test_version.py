@@ -24,12 +24,21 @@ class VersionConsistency(unittest.TestCase):
         for name in settings.to_dict():
             self.assertIn(f"  {name}:\n", manifest, name)
 
-    def test_readme_documents_every_setting_and_tool(self):
+    def test_readme_and_skill_document_every_setting_and_tool(self):
         readme = (REPO_ROOT / "README.md").read_text()
+        skill = (REPO_ROOT / "SKILL.md").read_text()
         for name in submodule("settings").Settings().to_dict():
             self.assertIn(name, readme, name)
         for schema in submodule("schemas").ALL:
             self.assertIn(f"`{schema['name']}`", readme, schema["name"])
+            self.assertIn(f"| `{schema['name']}` |", skill, schema["name"])  # the model's own tool table
+        # the skill's write-tool rows name every action the schema offers
+        for schema in submodule("schemas").WRITE:
+            actions = schema["parameters"]["properties"].get("action", {}).get("enum", [])
+            row = next(line for line in skill.splitlines() if line.startswith(f"| `{schema['name']}` |"))
+            for action in actions:
+                word = {"update": "edit"}.get(action, action).replace("_", " ").split()[0]
+                self.assertIn(word, row.lower(), (schema["name"], action))
 
     def test_schema_shapes(self):
         for schema in submodule("schemas").ALL:

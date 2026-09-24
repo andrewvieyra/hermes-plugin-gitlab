@@ -88,6 +88,16 @@ class StagedStoreTests(unittest.TestCase):
         with self.store.exclusive(1.0):
             pass
 
+    def test_create_gives_up_after_attempts(self):
+        original = store_mod.new_id
+        store_mod.new_id = lambda: "glw-20260909T190000Z-bbbb"
+        try:
+            self.store.create(_doc("glw-20260909T190000Z-bbbb"))
+            with self.assertRaises(RuntimeError):
+                self.store.create(_doc("glw-20260909T190000Z-bbbb"), attempts=3)
+        finally:
+            store_mod.new_id = original
+
     def test_ids_and_default_dir(self):
         a, b = store_mod.new_id(), store_mod.new_id()
         self.assertTrue(a.startswith("glw-") and "Z-" in a)

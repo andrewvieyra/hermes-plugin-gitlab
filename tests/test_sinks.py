@@ -4,6 +4,7 @@ import os
 import socket
 import socketserver
 import threading
+import time
 import unittest
 
 from .base import PluginTestCase
@@ -87,12 +88,39 @@ class Severity(unittest.TestCase):
         self.assertIsNone(sinks.build_sink({"type": "http", "url": "ftp://x"}))
         self.assertIsNone(sinks.build_sink({"type": "carrier-pigeon"}))
         self.assertIsNone(sinks.build_sink("junk"))
-        self.assertIsInstance(
-            sinks.build_sink({"type": "syslog", "host": "h", "format": "cef", "protocol": "tcp"}), sinks.SyslogSink
+        self.assertIsNone(sinks.build_sink({"type": "syslog", "host": "x", "protocol": "smoke"}))
+        self.assertIsNone(sinks.build_sink({"type": "syslog", "host": "x", "format": "xml"}))
+        good = sinks.build_sink(
+            {"type": "syslog", "host": "h", "format": "cef", "protocol": "tcp", "facility": "local3"}
         )
+        self.assertIsInstance(good, sinks.SyslogSink)
+        self.assertEqual((good.protocol, good.fmt, good.facility, good.framing), ("tcp", "cef", 19, "newline"))
+        self.assertEqual(sinks.build_sink({"type": "syslog", "host": "h", "protocol": "tls"}).framing, "octet-counting")
         self.assertIsInstance(
             sinks.build_sink({"type": "http", "url": "https://x/collector", "format": "hec"}), sinks.HttpSink
         )
+        worker = sinks.configure([{"type": "syslog", "host": "10.0.0.5"}, {"type": "bogus"}])
+        self.assertEqual(len(worker.sinks), 1)
+        worker.close(0.5)
+
+    def test_rfc5424_message_shape(self):
+        sink = sinks.SyslogSink("127.0.0.1", 514, facility="local0", app_name="hermes-gitlab")
+        msg = sink.message(_record("read_done"))
+        self.assertTrue(msg.startswith("<134>1 2026-09-09T19:35:50Z "), msg)  # local0 (16) * 8 + info (6)
+        head, body = msg.split(" - ", 1)
+        self.assertEqual(head.split(" ")[3:6], ["hermes-gitlab", "4242", "read_done"])
+        self.assertEqual(json.loads(body)["event"], "read_done")
+        self.assertTrue(sink.message(_record("write_refused")).startswith("<132>1 "))
+
+    def test_cef_escaping(self):
+        self.assertIn("|x\\|y|", sinks.to_cef(_record("x|y")))  # header pipes are escaped
+        self.assertEqual(sinks._cef_ext("a=b\\c\nd"), "a\\=b\\\\c\\nd")  # extension: = \ and newlines
+        self.assertIn("cn1Label=http_status cn1=403", sinks.to_cef(_record("write_failed", http_status=403)))
+
+    def test_no_sinks_means_no_thread(self):
+        worker = sinks.SinkWorker([])
+        self.assertFalse(worker.enqueue(_record()))
+        self.assertFalse(worker._thread.is_alive())
 
 
 def _serve(factory):
@@ -101,6 +129,19 @@ def _serve(factory):
         return factory()
     except PermissionError as exc:  # pragma: no cover - environment dependent
         raise unittest.SkipTest(f"cannot bind local sockets here: {exc}") from exc
+
+
+def _free_port():
+    """A port nothing listens on, so a sink pointed at it fails fast with a connection refusal."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def _wait(predicate, seconds=2.5):
+    deadline = time.monotonic() + seconds
+    while not predicate() and time.monotonic() < deadline:
+        time.sleep(0.02)
 
 
 class _UDP(socketserver.UDPServer):
@@ -142,10 +183,8 @@ class Delivery(PluginTestCase):
                 deadline -= 1
                 threading.Event().wait(0.05)
             message = server.received[0].decode()
-            self.assertTrue(
-                message.startswith(f"<{16 + 3 * 8 + sinks.SEV_NOTICE - 16}>1 2026-09-09T19:35:50Z ")
-                or message.startswith("<157>1 ")
-            )
+            # PRI = facility * 8 + severity: local3 (19) * 8 + notice (5)
+            self.assertTrue(message.startswith(f"<{19 * 8 + sinks.SEV_NOTICE}>1 2026-09-09T19:35:50Z "), message)
             self.assertIn(" hermes-gitlab 4242 write_done - {", message)
             self.assertEqual(json.loads(message.split(" - ", 1)[1])["event"], "write_done")
         finally:
@@ -203,15 +242,36 @@ class Delivery(PluginTestCase):
             self.configure(audit_sinks=[{"type": "syslog", "host": "127.0.0.1", "port": server.server_address[1]}])
             self.sinks.set_worker(None)
             self.call("gitlab_issue_write", project=1, action="comment", iid=1, body="hi")
+            self.call("gitlab_mr_write", project=1, action="merge", iid=10, sha="0" * 40)  # refused: allow_merge off
             self.assertTrue(self.sinks.get_worker().flush(5))
-            deadline = 50
-            while not server.received and deadline:
-                deadline -= 1
-                threading.Event().wait(0.05)
-            self.assertTrue(any(b"write_done" in m for m in server.received))
+            file_events = [e["event"] for e in self.events()]
+            _wait(lambda: len(server.received) >= len(file_events))
+            wire_events = [json.loads(d.decode().split(" - ", 1)[1])["event"] for d in server.received]
+            # every record in audit.jsonl reaches the wire, in order
+            self.assertEqual(wire_events, file_events, self.sinks.get_worker().stats)
+            self.assertIn("write_done", wire_events)
+            self.assertIn("write_refused", wire_events)
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_worker_built_from_settings(self):
+        self.configure(audit_sinks=[{"type": "syslog", "host": "127.0.0.1", "port": 1}])
+        self.sinks.set_worker(None)
+        worker = self.sinks.get_worker()
+        self.assertEqual(len(worker.sinks), 1)
+        self.assertEqual(worker.sinks[0].name, "syslog udp://127.0.0.1:1")
+
+    def test_unreachable_sink_is_retried_then_dropped_quickly(self):
+        port = _serve(_free_port)
+        dead = sinks.HttpSink(f"http://127.0.0.1:{port}/collector", timeout=0.5)
+        worker = sinks.SinkWorker([dead], retries=2, backoff=0.01)
+        started = time.monotonic()
+        worker.enqueue(_record())
+        self.assertTrue(worker.flush(10))
+        self.assertLess(time.monotonic() - started, 8)
+        self.assertEqual((worker.stats["sent"], worker.stats["failed"]), (0, 1))
+        worker.close(1)
 
     def test_tcp_syslog_framing(self):
         server = _serve(lambda: socketserver.TCPServer(("127.0.0.1", 0), socketserver.StreamRequestHandler))
@@ -238,9 +298,6 @@ class Delivery(PluginTestCase):
         finally:
             server.shutdown()
             server.server_close()
-
-    def test_socket_module_available(self):
-        self.assertTrue(hasattr(socket, "AF_INET"))
 
 
 if __name__ == "__main__":

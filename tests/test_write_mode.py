@@ -1,16 +1,27 @@
 import json
+import os
 import threading
 import unittest
 from datetime import datetime, timedelta, timezone
+from unittest import mock
 
 from .base import PluginTestCase
 
 
 class ReadOnly(PluginTestCase):
     def test_write_tools_hidden_and_refused(self):
+        # the check_fns decide what Hermes registers: reads need a configured token, writes also need a mode
+        env = {"GITLAB_URL": "https://gitlab.test", "GITLAB_TOKEN": "glpat-test-token-1234"}
+        with mock.patch.dict(os.environ, env):
+            self.configure(write_mode="read_only")
+            self.assertTrue(self.handlers.check_requirements())
+            self.assertFalse(self.handlers.check_write_requirements())
+            self.configure(write_mode="full")
+            self.assertTrue(self.handlers.check_write_requirements())
+        with mock.patch.dict(os.environ, {"GITLAB_URL": "", "GITLAB_TOKEN": ""}):
+            self.assertFalse(self.handlers.check_requirements())
+            self.assertFalse(self.handlers.check_write_requirements())
         self.configure(write_mode="read_only")
-        self.assertFalse(self.handlers.check_write_requirements())
-        self.assertTrue(self.handlers.check_requirements() in (True, False))  # depends on env, must not raise
         out = self.call("gitlab_issue_write", project=1, action="create", title="x")
         self.assertTrue(out["refused"])
         self.assertEqual(out["write_mode"], "read_only")

@@ -77,6 +77,14 @@ class ActorCapture(_EnvMixin, PluginTestCase):
         long = "x" * 900
         self.assertEqual(len(self.audit.capture_actor({"user_task": long})["request"]), self.audit.REQUEST_TEXT_LIMIT)
 
+    def test_request_text_is_redacted_before_it_is_recorded(self):
+        # a token pasted into chat must not reach audit.jsonl or a sink; redact_secrets governs it
+        pasted = "use glpat-abcdefghijklmnopqrst to comment"
+        self.configure(redact_secrets=True, audit_include_request=True)
+        self.assertEqual(self.audit.capture_actor({"user_task": pasted})["request"], "use [REDACTED] to comment")
+        self.configure(redact_secrets=False, audit_include_request=True)
+        self.assertEqual(self.audit.capture_actor({"user_task": pasted})["request"], pasted)
+
     def test_actor_keys_are_stable(self):
         keys = set(self.audit.capture_actor({}))
         self.set_session()
