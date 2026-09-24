@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-24
+
+Two review passes over 0.1.0: the escape hatch is harder to steer, more of what the model sees is
+redacted, and a few GitLab surfaces the first release skipped are covered. Nothing here changes a tool's
+arguments or results in a way that needs a prompt change.
+
 ### Added
 - `gitlab_repo` `action=project`: project metadata (default branch, visibility, merge settings).
 - `gitlab_commit` without `actions` creates `branch` from `start_branch` (bound to that head with

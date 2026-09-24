@@ -116,7 +116,7 @@ In `operator_only` mode a model-initiated request that passes the gate is stored
   "request": { /* WriteRequest.to_dict() */ },
   "requested_by": { /* actor */ },
   "requested_by_text": "model via tool on signal for Andrew in dm Andrew",
-  "audit": { "host": "hermes-01", "os_user": "hermes", "plugin_version": "0.1.0", "hermes_version": "0.21.0" },
+  "audit": { "host": "hermes-01", "os_user": "hermes", "plugin_version": "0.2.0", "hermes_version": "0.21.0" },
   "run": { "started_at": "...", "finished_at": "...", "actor": { /* operator */ }, "outcome": "done", "report": "...", "request": {"method": "PUT", "path": "...", "status": 200} }
 }
 ```
