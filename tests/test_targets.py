@@ -77,5 +77,21 @@ class ProjectArg(unittest.TestCase):
         self.assertIsNone(targets.project_from_path("groups/1/projects"))
 
 
+class Urls(unittest.TestCase):
+    def test_relative_url_root_and_reserved_paths(self):
+        base = "https://gitlab.test/gitlab"
+        parsed = targets.parse_url("https://gitlab.test/gitlab/platform/api/-/issues/3", base)
+        self.assertEqual((parsed["project"], parsed["kind"], parsed["iid"]), ("platform/api", "issue", 3))
+        self.assertEqual(targets.project_arg("https://gitlab.test/gitlab/platform/api", base), "platform/api")
+        for url in (
+            "https://gitlab.test/groups/platform/-/issues",
+            "https://gitlab.test/admin/users/x",
+            "https://gitlab.test/explore/projects/topics",
+        ):
+            self.assertIsNone(targets.parse_url(url), url)
+            with self.assertRaises(client_mod.GitLabError):
+                targets.project_arg(url, "https://gitlab.test")
+
+
 if __name__ == "__main__":
     unittest.main()

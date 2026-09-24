@@ -1,3 +1,5 @@
+import json
+import time
 import unittest
 
 from .fake_gitlab import FAILED_TRACE, SECRET_LINE
@@ -194,6 +196,10 @@ class Summaries(unittest.TestCase):
         )
         self.assertIn("andrew@signal", line)
         self.assertIn("merge_request!4", line)
+        # one event per line for `/gitlab audit`: newlines in a message cannot break the listing
+        line = render.audit_line({"ts": "2026-09-11T00:00:00Z", "event": "write_failed", "error": "one\ntwo\r\nthree"})
+        self.assertNotIn("\n", line)
+        self.assertIn("one two three", line)
 
     def test_clip(self):
         self.assertEqual(render.clip("abc", 10), "abc")
@@ -217,6 +223,65 @@ class LocalTime(unittest.TestCase):
             self.assertTrue(line.startswith("2026-09-09 12:35:50 PDT"), line)
         finally:
             timefmt.get_zone = original
+
+
+class Redaction(unittest.TestCase):
+    def test_more_token_formats(self):
+        # third-party key shapes are joined at runtime, so the repository holds nothing a scanner reads as a live key
+        samples = {
+            "glpat-abcdefghijklmnopqrst.01.0a1b2c3d4": "routable gitlab token",
+            "GR1348941abcdefghijklmnopqrstuvwxyz": "runner registration",
+            "sk-ant-api03-" + "abcdefghijklmnopqrstuvwxyz0123456789": "anthropic key",
+            "sk-proj-" + "abcdefghijklmnopqrstuvwxyz": "openai key",
+            "sk_live_" + "abcdefghijklmnopqrstuvwxyz": "stripe key",
+            "AIza" + "SyA1234567890abcdefghijklmnopqrstuv": "google key",
+            "npm_" + "a" * 36: "npm token",
+            "hf_" + "b" * 34: "hugging face token",
+        }
+        for token, label in samples.items():
+            text, count = render.redact_content(f"key = {token} # {label}")
+            self.assertNotIn(token, text, label)
+            self.assertNotIn(token[-8:], text, label)
+            self.assertGreaterEqual(count, 1, label)
+            self.assertIn(label, text)
+        self.assertEqual(render.redact_content("skip-this, sk-short and a task_list")[1], 0)
+
+    def test_redact_any_walks_everything_and_copies(self):
+        obj = {"a": [SECRET_LINE, {"b": f"x {SECRET_LINE}"}], "c": 3, "d": None}
+        out, count = render.redact_any(obj)
+        self.assertEqual(count, 2)
+        self.assertNotIn(SECRET_LINE, json.dumps(out))
+        self.assertEqual((out["c"], out["d"]), (3, None))
+        self.assertIn(SECRET_LINE, obj["a"][0])
+
+
+class RegexGuard(unittest.TestCase):
+    def test_dangerous_patterns_are_refused_and_safe_ones_run_fast(self):
+        for bad in ("(a+)+$", "(a|aa)+", "((ab)*)*", ".*.*.*x", r"(\w)\1", r"\d{1,1000}", "(?P<x>a)(?P=x)", "(?:a+)*"):
+            self.assertIsNotNone(render.regex_risk(bad), bad)
+        for good in (
+            "error|fail|exception|denied",
+            "error.*token",
+            "[+*]+x",
+            r"\(+x",
+            "(?:error|warn)",
+            "(error|warn)?",
+            "a{2,5}",
+            r"^\s*Error:",
+            "(?i:fatal)",
+        ):
+            self.assertIsNone(render.regex_risk(good), good)
+        start = time.monotonic()
+        _snippet, _total, matches, stopped = render.search_lines("a" * 300 + "\n" + "error here", "a*a*b|error")
+        self.assertLess(time.monotonic() - start, 2.0)
+        self.assertEqual((matches, stopped), (1, False))
+        # even a pattern that passes the guard cannot run past the budget: the scan stops and says so
+        hostile = "\n".join(["a" * 2000] * 400)
+        start = time.monotonic()
+        _snippet, total, _matches, stopped = render.search_lines(hostile, "a*a*b", budget=0.3)
+        self.assertLess(time.monotonic() - start, 3.0)
+        self.assertTrue(stopped)
+        self.assertEqual(total, 400)
 
 
 if __name__ == "__main__":

@@ -154,6 +154,17 @@ class LogWriting(PluginTestCase):
         log = self.audit.AuditLog(Path("/nonexistent-root-dir-for-tests/x/audit.jsonl"))
         self.assertIsNotNone(log.emit("write_done", actor=None, gitlab_url=None))
 
+    def test_recorded_request_text_is_redacted_end_to_end(self):
+        out = self.call_kw(
+            "gitlab_issue_write",
+            {"project": 1, "action": "comment", "iid": 1, "body": "x"},
+            user_task="use glpat-abcdefghijklmnopqrst to comment",
+        )
+        self.assertTrue(out["success"], out)
+        actor = self.events("write_done")[-1]["actor"]
+        self.assertNotIn("glpat-", actor["request"])
+        self.assertIn("[REDACTED]", actor["request"])
+
     def test_events_are_json_lines(self):
         self.audit.emit("write_done", actor=None, gitlab_url=None, summary="a\nb")
         line = self.audit_path.read_text().splitlines()[0]

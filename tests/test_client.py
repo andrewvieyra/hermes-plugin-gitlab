@@ -1,5 +1,6 @@
 import unittest
 
+from .base import PluginTestCase
 from .fake_gitlab import FakeGitLab, _Response, seeded
 from .helpers import submodule
 
@@ -156,6 +157,54 @@ class Requests(unittest.TestCase):
     def test_user_lookup(self):
         self.assertEqual(self.client.user_by_username("@Andrew")["id"], 2)
         self.assertIsNone(self.client.user_by_username("ghost"))
+
+
+class Transport(PluginTestCase):
+    def test_redirects_are_reported_not_followed(self):
+        def redirect(method, path, params, body):
+            if path == "user":
+                return _Response(302, None, {"Location": "https://elsewhere.example/api/v4/user"})
+            return None
+
+        self.gl.fail_on = redirect
+        with self.assertRaises(client_mod.GitLabError) as ctx:
+            self.client.get("user")
+        self.assertEqual(ctx.exception.status, 302)
+        self.assertIn("elsewhere.example", str(ctx.exception))
+        self.assertIn("not followed", str(ctx.exception))
+        out = self.call("gitlab_api", path="status")
+        self.assertFalse(out["success"])
+        self.assertIn("redirect", out["error"])
+
+
+class PathValidation(PluginTestCase):
+    def test_encoded_traversal_is_rejected(self):
+        for bad in ("projects/1/%2e%2e/admin/users", "projects/1/%252e%252e/admin", "%2e/projects/1", "a/%5c..%5cb"):
+            with self.assertRaises(client_mod.GitLabError, msg=bad):
+                client_mod.validate_path(bad)
+        self.assertEqual(client_mod.validate_path("projects/platform%2Fapi/labels"), "projects/platform%2Fapi/labels")
+        before = len(self.gl.calls)
+        out = self.call("gitlab_api", path="projects/1/%2e%2e/%2e%2e/admin/users")
+        self.assertFalse(out["success"])
+        self.assertIn("invalid path", out["error"])
+        self.assertEqual(len(self.gl.calls), before)
+
+    def test_encoded_query_and_fragment_are_rejected(self):
+        # `?` and `=` are refused as given; encoded, they pass the character check and a decoding proxy
+        # would turn `issues%3Fsudo%3Droot` into a query string the params check never saw
+        before = len(self.gl.calls)
+        for path in (
+            "projects/1/issues%3Fsudo%3Droot",
+            "projects/1/issues%253Fsudo%253Droot",
+            "projects/1/issues%23frag",
+            "projects/1/issues%3fsudo%3droot",
+        ):
+            with self.assertRaises(client_mod.GitLabError, msg=path):
+                client_mod.validate_path(path)
+            out = self.call("gitlab_api", path=path)
+            self.assertFalse(out["success"], (path, out))
+        self.assertEqual(len(self.gl.calls), before)
+        self.assertEqual(client_mod.validate_path("projects/platform%2Fapi/issues"), "projects/platform%2Fapi/issues")
 
 
 if __name__ == "__main__":

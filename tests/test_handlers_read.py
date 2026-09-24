@@ -1,9 +1,13 @@
 import json
+import os
 import unittest
+from unittest import mock
 
 from .base import PluginTestCase
 from .fake_gitlab import SECRET_LINE
 from .helpers import submodule
+
+client_mod = submodule("client")
 
 
 class Status(PluginTestCase):
@@ -403,6 +407,102 @@ class RawApi(PluginTestCase):
         self.assertEqual(done[0]["project"], "platform/api")
         self.assertEqual(done[0]["actor"]["kind"], "model")
         self.assertIn("404", failed[0]["error"])
+
+
+class RawResults(PluginTestCase):
+    def test_get_results_are_redacted_and_capped(self):
+        self.gl.mrs[1][10]["description"] = f"deploy with {SECRET_LINE} please"
+        out = self.call("gitlab_api", path="projects/1/merge_requests/10")
+        self.assertTrue(out["success"], out)
+        self.assertNotIn(SECRET_LINE, out["result"]["description"])
+        self.assertEqual(out["redacted"], 1)
+        self.configure(redact_secrets=False)
+        out = self.call("gitlab_api", path="projects/1/merge_requests/10")
+        self.assertIn(SECRET_LINE, out["result"]["description"])
+        self.configure(max_file_bytes=300)
+        out = self.call("gitlab_api", path="projects/1/repository/files/docs%2Fguide.md", params={"ref": "main"})
+        self.assertTrue(out["success"], out)
+        self.assertTrue(out["truncated"])
+        self.assertIsInstance(out["result"], str)
+        self.assertIn("max_file_bytes", out["result"])
+        out = self.call("gitlab_api", path="projects/1/issues", paginate=True, limit=3)
+        self.assertTrue(out["success"], out)
+        self.assertTrue(out["truncated"])
+        self.assertIsInstance(out["results"], str)
+        self.assertEqual(out["returned"], 3)
+
+    def test_raw_write_results_are_redacted(self):
+        self.configure(allow_raw_writes=True)
+        out = self.call(
+            "gitlab_api", method="POST", path="projects/1/labels", body={"name": SECRET_LINE, "color": "#123456"}
+        )
+        self.assertTrue(out["success"], out)
+        self.assertNotIn(SECRET_LINE, json.dumps(out["result"]))
+        self.assertIn(SECRET_LINE, self.gl.writes()[-1]["json"]["name"])  # what was sent is untouched
+
+
+class OutputHygiene(PluginTestCase):
+    def test_own_token_is_scrubbed_from_every_result(self):
+        self.configure(redact_secrets=False)
+        self.gl.mrs[1][10]["description"] = "leaked 0123456789abcdefXYZ here"
+        with mock.patch.dict(os.environ, {"GITLAB_TOKEN": "Bearer 0123456789abcdefXYZ"}):
+            out = self.call("gitlab_merge_requests", action="get", project=1, iid=10)
+        self.assertTrue(out["success"], out)
+        self.assertNotIn("0123456789abcdefXYZ", out["merge_request"]["description"])
+        self.assertIn("***", out["merge_request"]["description"])
+        self.assertEqual(client_mod.scrub_env("a short one", {"GITLAB_TOKEN": "short"}), "a short one")
+
+    def test_user_text_in_every_listing_is_redacted(self):
+        self.gl.projects[1]["description"] = f"see {SECRET_LINE}"
+        out = self.call("gitlab_search", scope="projects", query="api")
+        self.assertTrue(out["success"], out)
+        self.assertNotIn(SECRET_LINE, json.dumps(out))
+        self.assertGreaterEqual(out["redacted"], 1)
+        self.gl.branches[1]["main"]["commit"]["title"] = f"Rotate {SECRET_LINE}"
+        out = self.call("gitlab_repo", project=1, action="branches")
+        self.assertNotIn(SECRET_LINE, json.dumps(out))
+        self.gl.mrs[1][10]["description"] = f"deploy {SECRET_LINE}"
+        out = self.call("gitlab_mr_write", project=1, action="update", iid=10, title="New title")
+        self.assertTrue(out["success"], out)
+        self.assertNotIn(SECRET_LINE, json.dumps(out["result"]))
+
+
+class ProjectMetadata(PluginTestCase):
+    def test_repo_project_action(self):
+        out = self.call("gitlab_repo", project="platform/api", action="project")
+        self.assertTrue(out["success"], out)
+        self.assertEqual(out["metadata"]["path_with_namespace"], "platform/api")
+        self.assertEqual(out["metadata"]["default_branch"], "main")
+        out = self.call("gitlab_repo", project=f"{self.gl.base_url}/platform/api/-/merge_requests/10", action="project")
+        self.assertEqual(out["metadata"]["id"], 1)
+        out = self.call(
+            "gitlab_pipelines", action="get", project=1, pipeline_id=self.gl.mrs[1][10]["head_pipeline"]["id"]
+        )
+        self.assertTrue(out["success"], out)
+        self.assertEqual(out["bridges"], [])
+
+
+class ReadExtras(PluginTestCase):
+    def test_closes_issues_and_pipeline_name_filter(self):
+        out = self.call("gitlab_merge_requests", action="get", project=1, iid=10)
+        self.assertTrue(out["success"], out)
+        self.assertEqual(out["closes_issues"], [])
+        out = self.call("gitlab_pipelines", project=1, name="nightly")
+        self.assertTrue(out["success"], out)
+        self.assertEqual(self.gl.calls[-1]["params"].get("name"), "nightly")
+
+
+class LogSearchGuard(PluginTestCase):
+    def test_log_search_refuses_long_and_backtracking_patterns(self):
+        job_id = self.call("gitlab_pipelines", project=1, action="jobs")["jobs"][0]["id"]
+        out = self.call("gitlab_pipelines", project=1, action="log", job_id=job_id, search="(a+)+" * 60)
+        self.assertFalse(out["success"])
+        self.assertIn("200 characters", out["error"])
+        out = self.call("gitlab_pipelines", project=1, action="log", job_id=job_id, search="(a+)+$")
+        self.assertFalse(out["success"])
+        self.assertIn("repeated group", out["error"])
+        out = self.call("gitlab_pipelines", project=1, action="log", job_id=job_id, search="error|fail")
+        self.assertTrue(out["success"], out)
 
 
 if __name__ == "__main__":

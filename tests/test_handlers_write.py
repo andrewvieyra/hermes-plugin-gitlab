@@ -597,5 +597,140 @@ class BooleanArguments(PluginTestCase):
         self.assertIsNone(self.gl.calls[-1]["params"].get("confidential"))
 
 
+class DiscussionIds(PluginTestCase):
+    def test_discussion_ids_are_validated_before_use(self):
+        # the id is interpolated into a URL path: `../merge?sha=…` on resolve must never become a merge
+        head = self.gl.mrs[1][10]["sha"]
+        before = len(self.gl.writes())
+        for bad in (f"../merge?sha={head}", "x/../../hooks", "abc#frag", "..", "a b", "%2e%2e/merge", "id;x"):
+            for tool, args in (
+                ("gitlab_mr_write", {"action": "resolve", "iid": 10, "discussion_id": bad}),
+                ("gitlab_mr_write", {"action": "comment", "iid": 10, "body": "x", "discussion_id": bad}),
+                ("gitlab_issue_write", {"action": "comment", "iid": 1, "body": "x", "discussion_id": bad}),
+            ):
+                out = self.call(tool, project=1, **args)
+                self.assertTrue(out.get("rejected"), (tool, bad, out))
+                self.assertEqual(out["field"], "discussion_id")
+        self.assertEqual(len(self.gl.writes()), before)
+        self.assertEqual(self.gl.mrs[1][10]["state"], "opened")
+        good = self.gl.discussions[(1, "merge_requests", 10)][0]["id"]
+        out = self.call("gitlab_mr_write", project=1, action="resolve", iid=10, discussion_id=good)
+        self.assertTrue(out["success"], out)
+        self.assertEqual(self.events("write_rejected")[0]["field"], "discussion_id")
+
+
+class DiffPositions(PluginTestCase):
+    def test_renamed_file_keeps_its_old_path(self):
+        self.gl.mr_diffs[(1, 10)].append(
+            dict(
+                self.gl.mr_diffs[(1, 10)][0],
+                old_path="src/old_name.py",
+                new_path="src/new_name.py",
+                renamed_file=True,
+                new_file=False,
+                diff="@@ -1,2 +1,2 @@\n a\n-b\n+c\n",
+            )
+        )
+
+        def comment(**position):
+            out = self.call("gitlab_mr_write", project=1, action="comment", iid=10, body="x", position=position)
+            self.assertTrue(out["success"], out)
+            return self.gl.writes()[-1]["json"]["position"]
+
+        sent = comment(new_path="src/new_name.py", new_line=2)
+        self.assertEqual(
+            (sent["old_path"], sent["new_path"], sent["new_line"]), ("src/old_name.py", "src/new_name.py", 2)
+        )
+        self.assertIsNone(sent.get("old_line"))
+        sent = comment(old_path="src/old_name.py", old_line=2)
+        self.assertEqual(
+            (sent["old_path"], sent["new_path"], sent["old_line"]), ("src/old_name.py", "src/new_name.py", 2)
+        )
+        self.assertIsNone(sent.get("new_line"))
+
+
+class AutoMerge(PluginTestCase):
+    def test_cancel_auto_merge_needs_no_flag(self):
+        out = self.call("gitlab_mr_write", project=1, action="cancel_auto_merge", iid=10, dry_run=True)
+        self.assertTrue(out["dry_run"], out)
+        self.assertTrue(out["preview"]["path"].endswith("/merge_requests/10/cancel_merge_when_pipeline_succeeds"))
+        self.assertEqual(out["preview"]["method"], "POST")
+        self.assertEqual(out["preview"]["requires"], [])
+
+
+class BranchCreation(PluginTestCase):
+    def test_commit_without_actions_creates_the_branch(self):
+        head = self.gl.head(1, "main")
+        out = self.call(
+            "gitlab_commit",
+            project="platform/api",
+            branch="feature/empty",
+            start_branch="main",
+            expected_head_sha=head,
+            dry_run=True,
+        )
+        self.assertTrue(out["dry_run"], out)
+        self.assertEqual(out["preview"]["method"], "POST")
+        self.assertTrue(out["preview"]["path"].endswith("/repository/branches"))
+        self.assertEqual(out["preview"]["json"], {"branch": "feature/empty", "ref": "main"})
+        self.assertEqual(out["preview"]["preconditions"][0]["branch"], "main")
+        out = self.call(
+            "gitlab_commit", project="platform/api", branch="feature/empty", start_branch="main", expected_head_sha=head
+        )
+        self.assertTrue(out["success"], out)
+        self.assertEqual(out["action"], "branch.create")
+        self.assertIn("Branch feature/empty created", out["report"])
+        self.assertEqual(out["result"]["commit"]["id"], head)
+        done = self.events("write_done")[-1]
+        self.assertEqual((done["action"], done["result"]["branch"]), ("branch.create", "feature/empty"))
+        writes_before = len(self.gl.writes())
+        out = self.call("gitlab_commit", project="platform/api", branch="feature/empty", start_branch="main")
+        self.assertTrue(out["rejected"], out)
+        self.assertIn("already exists", out["error"])
+        self.assertEqual(len(self.gl.writes()), writes_before)
+        out = self.call(
+            "gitlab_commit",
+            project="platform/api",
+            branch="feature/empty",
+            commit_message="add x",
+            actions=[{"action": "create", "file_path": "x.txt", "content": "x\n"}],
+            expected_head_sha=head,
+        )
+        self.assertTrue(out["success"], out)
+        self.assertEqual(out["action"], "commit.create")
+
+    def test_branch_only_needs_start_branch_and_a_fresh_head(self):
+        out = self.call("gitlab_commit", project="platform/api", branch="feature/x")
+        self.assertTrue(out["rejected"], out)
+        self.assertIn("start_branch", out["error"])
+        out = self.call(
+            "gitlab_commit", project="platform/api", branch="feature/x", start_branch="main", expected_head_sha="0" * 40
+        )
+        self.assertTrue(out["conflict"], out)
+        self.assertEqual(out["precondition"]["kind"], "branch_head")
+        self.assertNotIn("feature/x", self.gl.branches[1])
+        out = self.call("gitlab_commit", project="platform/api", branch="feature/x", actions="junk", commit_message="m")
+        self.assertTrue(out["rejected"], out)
+        self.assertEqual(out["field"], "actions")
+
+
+class PipelineInputs(PluginTestCase):
+    def test_inputs_are_passed_through(self):
+        out = self.call(
+            "gitlab_pipeline_write",
+            project=1,
+            action="run",
+            ref="main",
+            inputs={"environment": "staging", "replicas": 2},
+            dry_run=True,
+        )
+        self.assertTrue(out["dry_run"], out)
+        self.assertEqual(out["preview"]["json"]["inputs"], {"environment": "staging", "replicas": 2})
+        self.assertIn("2 input(s)", out["summary"])
+        out = self.call("gitlab_pipeline_write", project=1, action="run", ref="main", inputs="bad")
+        self.assertTrue(out["rejected"], out)
+        self.assertEqual(out["field"], "inputs")
+
+
 if __name__ == "__main__":
     unittest.main()
